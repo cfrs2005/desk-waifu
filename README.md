@@ -206,14 +206,42 @@ tail -f ~/.desk-waifu/state-writer.log
 
 ### 想换自己的素材
 
-只需把 `~/.desk-waifu/gifs/*.gif` 替换。文件名必须严格对应这 9 个状态：
+两条路：
+
+**A. 直接换 GIF（最简单）**
+
+把 `~/.desk-waifu/gifs/*.gif` 替换成你自己的，文件名必须严格对应这 9 个状态：
 
 ```
 idle_blink coding peek loading fix_bug
 error_shrug celebrate supervise sleep
 ```
 
-GIF 透明背景效果最好。可以参考 [`assets/gifs/make_gifs.py`](https://github.com/cfrs2005/desk-waifu)（或本仓库 `2026-05-10/make_gifs.py` 旧版）从精灵图切帧生成。
+GIF 必须是**真透明**（GIF89a + 调色板透明索引），白底会很显眼。
+
+**B. 从精灵图自动生成（推荐）**
+
+往 `assets/source/` 放 9 张同名 PNG，每张是一行 N 帧的横向精灵图：
+
+```
+assets/source/
+  idle_blink.png    # 6 frames horizontal strip
+  coding.png        # 6 frames
+  ...
+```
+
+然后跑：
+
+```bash
+pdm install                              # 装 Pillow
+pdm run python scripts/make_gifs.py      # 全部重生成
+pdm run python scripts/make_gifs.py celebrate  # 只生成某一个
+./scripts/install.sh                     # 把新 GIF 推到 ~/.desk-waifu/gifs/
+```
+
+帧数 / 时长 / 是否回弹播放在 `scripts/make_gifs.py` 顶部的 `STATES` 表里调。
+
+> 这个脚本用 **magenta-key** 算法保证 GIF 透明：把白底打上洋红色（#FF00FF）→ 量化到 255 色 → 强制 palette[255] = 洋红 → 在 GIF 头里标 transparency=255。这样无论你的素材多花哨，透明永远生效，比 PIL 默认的 RGBA→GIF 路径稳。
 
 ### 不想再让她出现一会儿
 
