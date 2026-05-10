@@ -3,11 +3,15 @@
 > 一个会陪你写代码的 chibi 桌面伴侣。Claude Code 在干什么，她就做什么。
 
 <p align="center">
-  <img src="assets/gifs/coding.gif" width="120" alt="coding"/>
-  <img src="assets/gifs/fix_bug.gif" width="120" alt="fix_bug"/>
-  <img src="assets/gifs/error_shrug.gif" width="120" alt="error"/>
-  <img src="assets/gifs/celebrate.gif" width="120" alt="celebrate"/>
-  <img src="assets/gifs/supervise.gif" width="120" alt="supervise"/>
+  <img src="assets/banner.gif" alt="9 states demo" width="100%"/>
+</p>
+
+<p align="center">
+  <a href="https://github.com/cfrs2005/desk-waifu/releases"><img src="https://img.shields.io/github/v/release/cfrs2005/desk-waifu?include_prereleases" alt="release"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/cfrs2005/desk-waifu" alt="license"/></a>
+  <img src="https://img.shields.io/badge/platform-macOS-black" alt="macos"/>
+  <img src="https://img.shields.io/badge/needs-Hammerspoon-ff69b4" alt="hammerspoon"/>
+  <img src="https://img.shields.io/badge/agent-Claude%20Code-7c3aed" alt="claude code"/>
 </p>
 
 `desk-waifu` 是一个 macOS 桌面浮窗，根据 [Claude Code](https://claude.com/claude-code) 当前的工作状态切换 GIF 动画。它写代码她就敲键盘，报错了她就摊手，编译跑着她就抱进度条。
