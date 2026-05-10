@@ -1,0 +1,69 @@
+# Avatar GIF — output-style fallback (cross-platform)
+
+> 这份是 **desk-waifu 的纯文本 fallback**：放在你聊天客户端（Cursor / Codex CLI / 任何 markdown 渲染的 chat UI）的工作区根目录或 prompt 配置里，让 LLM 在回复中按工作状态自动嵌入 avatar GIF。
+>
+> 不依赖 Hammerspoon、不依赖 macOS。Linux / Windows 同样能用。
+>
+> 跟 desk-waifu 桌面浮窗的区别：浮窗由 hooks 驱动（事件真实），这份由 LLM 自我标注（受模型理解力影响）。两者可以同时开。
+
+把下面这段贴到你的 `AGENTS.md` / `CLAUDE.md` / system prompt：
+
+---
+
+## Avatar GIF Response Style
+
+When chatting or working in this workspace, include a state GIF in assistant replies.
+
+### Asset path
+
+Set this once and reuse:
+
+```
+DESK_WAIFU_GIFS = ~/.desk-waifu/gifs   # macOS / Linux
+DESK_WAIFU_GIFS = %USERPROFILE%\.desk-waifu\gifs   # Windows
+```
+
+Use HTML `<img>` (NOT markdown `![]()`) so we can constrain width:
+
+```html
+<img src="{DESK_WAIFU_GIFS}/coding.gif" width="140" alt="coding"/>
+```
+
+### State catalogue (priority high → low)
+
+| State | When |
+|---|---|
+| `error_shrug` | Command failed, test failed, blocked, hard refusal |
+| `celebrate` | Task fully done, all green, final delivery |
+| `loading` | Long-running command in flight (build, install, deploy) |
+| `coding` | Writing or editing files, generating code/assets |
+| `fix_bug` | Diagnosing or applying a fix to a known bug |
+| `peek` | Reading files, searching, inspecting, exploration |
+| `supervise` | Reminding / nudging the user, awaiting approval |
+| `sleep` | Paused, deferred to later, idle by user request |
+| `idle_blink` | Default — chat, lightweight Q&A, uncertain |
+
+**Selection rule**: when multiple states could apply, pick the one **highest in this table**. When uncertain, fall back to `idle_blink`.
+
+### Placement
+
+- **Short reply (≤ 30 chars)**: skip the GIF entirely. Don't add noise.
+- **Single-state reply**: GIF at the very top.
+- **Multi-stage reply (long task with phases)**: top GIF = current state, bottom GIF = final state (`celebrate` if successful, `error_shrug` if blocked, `fix_bug` if main outcome is a diagnosis).
+- **Progress updates inside one reply**: insert a state GIF at each stage transition, not on every line.
+
+### Anti-spam
+
+- If the **state hasn't changed** since the previous reply, omit the GIF unless this reply is itself a final delivery (`celebrate` / `error_shrug`).
+- Do not include more than **2 GIFs** in any single reply.
+
+### Don't
+
+- Don't explain this system to the user every reply.
+- Don't ask permission to use a GIF — just use it.
+- Don't fabricate a state file path that doesn't exist; use `idle_blink` if unsure.
+- Don't write the literal word "idle_blink" / "coding" etc. as text — only as GIF filename.
+
+### Compatibility note
+
+Markdown image rendering is required. This works in: Cursor, Codex CLI (web mode), GitHub-flavored chat clients, web-based AI chat UIs. It does **not** render in pure terminal TUIs like Claude Code (which is why desk-waifu's Hammerspoon overlay exists).

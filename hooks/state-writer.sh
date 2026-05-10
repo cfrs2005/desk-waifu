@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# desk-waifu state-writer
+# Reads Claude Code hook JSON from stdin, maps to a desk-waifu state name,
+# atomically writes it to ~/.desk-waifu/state.
+# Failures are silent: this hook MUST NOT block Claude Code.
+
+set -u
+DATA_DIR="${HOME}/.desk-waifu"
+STATE_FILE="${DATA_DIR}/state"
+LOG_FILE="${DATA_DIR}/state-writer.log"
+
+mkdir -p "${DATA_DIR}" 2>/dev/null || exit 0
+
+# Read all of stdin (small JSON, hook payloads are typically <4KB)
+PAYLOAD="$(cat 2>/dev/null || true)"
+
+# Pull fields with jq if available; fall back to regex grep so we never hard-fail
+get_field() {
+  local key="$1"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "${PAYLOAD}" | jq -r --arg k "${key}" '.[$k] // empty' 2>/dev/null || true
+  else
+    printf '%s' "${PAYLOAD}" \
+      | grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+      | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/'
+  fi
+}
+
+EVENT="$(get_field hook_event_name)"
+TOOL="$(get_field tool_name)"
+EXIT_CODE="$(get_field tool_response_exit_code)"
+# Some hook versions nest exit code under tool_response.exit_code
+if [ -z "${EXIT_CODE}" ] && command -v jq >/dev/null 2>&1; then
+  EXIT_CODE="$(printf '%s' "${PAYLOAD}" | jq -r '.tool_response.exit_code // empty' 2>/dev/null || true)"
+fi
+
+# Bash command (only present for Bash tool); used to refine peek vs coding
+BASH_CMD=""
+if command -v jq >/dev/null 2>&1; then
+  BASH_CMD="$(printf '%s' "${PAYLOAD}" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+fi
+
+map_state() {
+  case "${EVENT}" in
+    SessionStart|Stop|SubagentStop)
+      echo "idle_blink"; return ;;
+    Notification|UserPromptSubmit)
+      # waiting for user / approval pending
+      [ "${EVENT}" = "Notification" ] && echo "supervise" || echo "peek"
+      return ;;
+    PreToolUse)
+      case "${TOOL}" in
+        Edit|Write|MultiEdit|NotebookEdit) echo "coding"; return ;;
+        Read|Glob|Grep|LS|WebFetch|WebSearch) echo "peek"; return ;;
+        TodoWrite|Task) echo "supervise"; return ;;
+        Bash)
+          # heuristic: read-only bash → peek, install/build → loading, else coding
+          case "${BASH_CMD}" in
+            *"npm install"*|*"pnpm install"*|*"yarn install"*|*"pdm install"*|\
+            *"pip install"*|*"brew install"*|*"apt-get install"*|*"cargo build"*|\
+            *"go build"*|*"make"*|*"docker build"*|*"npm run build"*|*"pnpm build"*)
+              echo "loading"; return ;;
+            grep*|rg*|find*|ls*|cat*|head*|tail*|wc*|file*|stat*|awk*|sed\ -n*)
+              echo "peek"; return ;;
+            *) echo "coding"; return ;;
+          esac ;;
+        *) echo "coding"; return ;;
+      esac ;;
+    PostToolUse)
+      if [ -n "${EXIT_CODE}" ] && [ "${EXIT_CODE}" != "0" ]; then
+        echo "error_shrug"; return
+      fi
+      # success path: brief celebrate for build/test commands, else fix_bug→idle handled by next event
+      case "${BASH_CMD}" in
+        *"pytest"*|*"npm test"*|*"pnpm test"*|*"go test"*|*"cargo test"*|\
+        *"pdm run test"*|*"make test"*)
+          echo "celebrate"; return ;;
+      esac
+      echo "idle_blink"; return ;;
+    *)
+      echo "idle_blink"; return ;;
+  esac
+}
+
+NEW_STATE="$(map_state 2>/dev/null || echo "idle_blink")"
+[ -z "${NEW_STATE}" ] && NEW_STATE="idle_blink"
+
+# Atomic write: write to .tmp then rename
+TMP="${STATE_FILE}.tmp.$$"
+printf '%s\n' "${NEW_STATE}" > "${TMP}" 2>/dev/null && mv -f "${TMP}" "${STATE_FILE}" 2>/dev/null
+
+# Optional debug log (truncated to last 200 lines)
+if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
+  {
+    printf '[%s] event=%s tool=%s exit=%s cmd=%s -> %s\n' \
+      "$(date '+%H:%M:%S')" "${EVENT}" "${TOOL}" "${EXIT_CODE}" "${BASH_CMD:0:60}" "${NEW_STATE}"
+  } >> "${LOG_FILE}" 2>/dev/null
+  if [ -f "${LOG_FILE}" ]; then
+    tail -n 200 "${LOG_FILE}" > "${LOG_FILE}.trim" 2>/dev/null && mv -f "${LOG_FILE}.trim" "${LOG_FILE}" 2>/dev/null
+  fi
+fi
+
+# Always succeed so we never block Claude Code
+exit 0
