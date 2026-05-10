@@ -50,17 +50,22 @@ cd desk-waifu
 
 | 状态 | 触发 | 动作 |
 |---|---|---|
-| `idle_blink` | SessionStart / Stop / 默认 | 站着眨眼 |
-| `coding` | PreToolUse + Edit/Write/MultiEdit/普通 Bash | 敲代码 |
+| `sleep` | SessionStart / SubagentStop / 默认 fallback | 趴枕头 ZZZ |
+| `coding` | UserPromptSubmit / PreToolUse(Edit/Write/普通 Bash) / PostToolUse 成功 | 敲代码（每 ~12 秒随机切到 fix_bug 拧扳手）|
 | `peek` | PreToolUse + Read/Grep/Glob/LS/WebFetch/只读 Bash | 探出窗口偷看 |
 | `loading` | PreToolUse + 安装/构建命令 | 抱进度条 |
-| `fix_bug` | （保留，可手动写入） | 拿扳手修 bug |
 | `error_shrug` | PostToolUse + exit_code != 0 | 举 ERROR 牌摊手 |
-| `celebrate` | PostToolUse + 测试命令成功 | 跳 100% 庆祝 |
+| `celebrate` | Stop（一轮回话结束）| 跳 100% 庆祝；**保持 60 秒后自动转 sleep** |
 | `supervise` | Notification（等批准）/ TodoWrite / Task | 叉腰盯着 |
-| `sleep` | （保留，可手动写入） | 趴枕头 ZZZ |
+| `fix_bug` | coding 状态下随机轮播（不直接由 hook 触发） | 拿扳手修 bug |
 
-完整规则在 [`hooks/state-writer.sh`](hooks/state-writer.sh)。
+**核心语义**：
+
+- **没事 = 睡（`sleep`）** —— 你不发言、Claude Code 不在干活，她就趴在那。
+- **干活 = 敲代码（`coding`，偶尔切修 bug）** —— 任何 Claude Code 活动都是这状态。
+- **结束 = 庆祝 1 分钟（`celebrate`→`sleep`）** —— 一轮回话结束跳跃 60 秒，然后自己回去睡。
+
+完整规则在 [`hooks/state-writer.sh`](hooks/state-writer.sh)，时长/阈值在 `~/.desk-waifu/config.json` 调（`celebrate_hold` 秒数、`variant_period` 轮播间隔）。
 
 ## 手动控制
 

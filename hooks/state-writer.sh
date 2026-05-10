@@ -42,19 +42,23 @@ fi
 
 map_state() {
   case "${EVENT}" in
-    SessionStart|Stop|SubagentStop)
-      echo "idle_blink"; return ;;
-    Notification|UserPromptSubmit)
-      # waiting for user / approval pending
-      [ "${EVENT}" = "Notification" ] && echo "supervise" || echo "peek"
-      return ;;
+    SessionStart|SubagentStop)
+      echo "sleep"; return ;;
+    Stop)
+      # End of an assistant turn — celebrate. The Hammerspoon daemon will
+      # auto-revert to "sleep" after ~60s unless a new turn starts first.
+      echo "celebrate"; return ;;
+    UserPromptSubmit)
+      # User just sent a prompt — assistant is now actively working.
+      echo "coding"; return ;;
+    Notification)
+      echo "supervise"; return ;;
     PreToolUse)
       case "${TOOL}" in
         Edit|Write|MultiEdit|NotebookEdit) echo "coding"; return ;;
         Read|Glob|Grep|LS|WebFetch|WebSearch) echo "peek"; return ;;
         TodoWrite|Task) echo "supervise"; return ;;
         Bash)
-          # heuristic: read-only bash → peek, install/build → loading, else coding
           case "${BASH_CMD}" in
             *"npm install"*|*"pnpm install"*|*"yarn install"*|*"pdm install"*|\
             *"pip install"*|*"brew install"*|*"apt-get install"*|*"cargo build"*|\
@@ -70,15 +74,10 @@ map_state() {
       if [ -n "${EXIT_CODE}" ] && [ "${EXIT_CODE}" != "0" ]; then
         echo "error_shrug"; return
       fi
-      # success path: brief celebrate for build/test commands, else fix_bug→idle handled by next event
-      case "${BASH_CMD}" in
-        *"pytest"*|*"npm test"*|*"pnpm test"*|*"go test"*|*"cargo test"*|\
-        *"pdm run test"*|*"make test"*)
-          echo "celebrate"; return ;;
-      esac
-      echo "idle_blink"; return ;;
+      # Tool succeeded but the turn isn't over yet — keep coding.
+      echo "coding"; return ;;
     *)
-      echo "idle_blink"; return ;;
+      echo "sleep"; return ;;
   esac
 }
 

@@ -11,19 +11,29 @@ local CONFIG_FILE = DATA_DIR .. "/config.json"
 local VIEWER_HTML = DATA_DIR .. "/viewer.html"
 
 local DEFAULTS = {
-  size           = 240,
-  margin         = 20,
-  corner         = "bottom-right", -- bottom-right | bottom-left | top-right | top-left
-  level          = "floating",     -- floating | popUpMenu
-  hotkey_toggle  = { mods = {"cmd","alt"}, key = "p" },
-  hotkey_cycle   = { mods = {"cmd","alt"}, key = ";" },
-  hotkey_reload  = { mods = {"cmd","alt"}, key = "r" },
+  size            = 240,
+  margin          = 20,
+  corner          = "bottom-right", -- bottom-right | bottom-left | top-right | top-left
+  level           = "floating",     -- floating | popUpMenu
+  celebrate_hold  = 60,             -- seconds to keep celebrate before falling back to sleep
+  variant_period  = 12,             -- seconds between random reroll inside variant states
+  hotkey_toggle   = { mods = {"cmd","alt"}, key = "p" },
+  hotkey_cycle    = { mods = {"cmd","alt"}, key = ";" },
+  hotkey_reload   = { mods = {"cmd","alt"}, key = "r" },
+}
+
+-- States that visually rotate between several GIFs to feel less static.
+-- Renderer always reads from this table; values are gif basenames.
+local VARIANTS = {
+  coding = { "coding", "fix_bug" },
 }
 
 local config = {}
 local webview = nil
 local watcher = nil
 local current_state = nil
+local revert_timer = nil      -- celebrate → sleep auto-revert
+local variant_timer = nil     -- periodic reroll inside variant states
 
 local function read_file(path)
   local f = io.open(path, "r")
@@ -106,16 +116,46 @@ local function render(state)
   if not webview:isVisible() then webview:show() end
 end
 
+local function pick_variant(state)
+  local pool = VARIANTS[state]
+  if not pool or #pool == 0 then return state end
+  return pool[math.random(#pool)]
+end
+
+local function schedule_revert()
+  if revert_timer then revert_timer:stop(); revert_timer = nil end
+  revert_timer = hs.timer.doAfter(config.celebrate_hold or 60, function()
+    revert_timer = nil
+    -- Write through the state file so anyone watching sees the transition.
+    local f = io.open(STATE_FILE, "w")
+    if f then f:write("sleep\n"); f:close() end
+  end)
+end
+
 local function on_state_change()
   local raw = read_file(STATE_FILE); if not raw then return end
   local state = raw:gsub("%s+$", ""):gsub("^%s+", "")
-  if state == "" or state == current_state then return end
-  if not file_exists(GIFS_DIR .. "/" .. state .. ".gif") then
-    print(string.format("[desk-waifu] no gif for state '%s', ignored", state))
+  if state == "" then return end
+
+  -- Skip no-op for non-variant states; variant states always re-render so
+  -- each new event can re-roll the gif.
+  if not VARIANTS[state] and state == current_state then return end
+
+  local visual = pick_variant(state)
+  if not file_exists(GIFS_DIR .. "/" .. visual .. ".gif") then
+    print(string.format("[desk-waifu] no gif for state '%s' (visual '%s'), ignored", state, visual))
     return
   end
+
+  -- Cancel any pending celebrate→sleep revert if a new state arrives first.
+  if state ~= "celebrate" and revert_timer then
+    revert_timer:stop(); revert_timer = nil
+  end
+
   current_state = state
-  render(state)
+  render(visual)
+
+  if state == "celebrate" then schedule_revert() end
 end
 
 local function on_path_event(paths)
@@ -145,15 +185,24 @@ end
 
 function M.start()
   load_config()
+  math.randomseed(os.time())
   os.execute(string.format("mkdir -p %q %q", DATA_DIR, GIFS_DIR))
   if not file_exists(STATE_FILE) then
     local f = io.open(STATE_FILE, "w")
-    if f then f:write("idle_blink\n"); f:close() end
+    if f then f:write("sleep\n"); f:close() end
   end
   current_state = nil
   on_state_change()
-  if not current_state then render("idle_blink"); current_state = "idle_blink" end
+  if not current_state then render("sleep"); current_state = "sleep" end
   watcher = hs.pathwatcher.new(DATA_DIR .. "/", on_path_event):start()
+
+  -- Periodic reroll while inside a variant state (e.g. coding ⇄ fix_bug).
+  variant_timer = hs.timer.doEvery(config.variant_period or 12, function()
+    if current_state and VARIANTS[current_state] then
+      render(pick_variant(current_state))
+    end
+  end)
+
   hs.hotkey.bind(config.hotkey_toggle.mods, config.hotkey_toggle.key, M.toggle)
   hs.hotkey.bind(config.hotkey_cycle.mods,  config.hotkey_cycle.key,  M.cycle_corner)
   hs.hotkey.bind(config.hotkey_reload.mods, config.hotkey_reload.key, M.reload)
@@ -162,6 +211,8 @@ end
 
 function M.stop()
   if watcher then watcher:stop(); watcher = nil end
+  if revert_timer then revert_timer:stop(); revert_timer = nil end
+  if variant_timer then variant_timer:stop(); variant_timer = nil end
   if webview then webview:delete(); webview = nil end
   current_state = nil
 end
