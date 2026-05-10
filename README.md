@@ -62,10 +62,20 @@ cd desk-waifu
 **核心语义**：
 
 - **没事 = 睡（`sleep`）** —— 你不发言、Claude Code 不在干活，她就趴在那。
-- **干活 = 敲代码（`coding`，偶尔切修 bug）** —— 任何 Claude Code 活动都是这状态。
+- **干活 = 敲代码（`coding`，每 12 秒随机轮播敲键盘 ⇄ 修 bug）** —— 任何 Claude Code 活动都是这状态。
 - **结束 = 庆祝 1 分钟（`celebrate`→`sleep`）** —— 一轮回话结束跳跃 60 秒，然后自己回去睡。
+- **失联自救（idle watchdog）** —— 任何活跃状态超过 3 分钟没新事件，自动降级到 sleep。会话异常断开 / 你走开了，她不会卡住。
 
-完整规则在 [`hooks/state-writer.sh`](hooks/state-writer.sh)，时长/阈值在 `~/.desk-waifu/config.json` 调（`celebrate_hold` 秒数、`variant_period` 轮播间隔）。
+完整规则在 [`hooks/state-writer.sh`](hooks/state-writer.sh)，可调参数（写到 `~/.desk-waifu/config.json`）：
+
+```json
+{
+  "celebrate_hold": 60,
+  "variant_period": 12,
+  "idle_threshold": 180,
+  "idle_check":     30
+}
+```
 
 ## 手动控制
 

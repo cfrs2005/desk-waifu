@@ -17,6 +17,8 @@ local DEFAULTS = {
   level           = "floating",     -- floating | popUpMenu
   celebrate_hold  = 60,             -- seconds to keep celebrate before falling back to sleep
   variant_period  = 12,             -- seconds between random reroll inside variant states
+  idle_threshold  = 180,            -- seconds without any hook event -> demote to sleep
+  idle_check      = 30,             -- how often the idle checker fires
   hotkey_toggle   = { mods = {"cmd","alt"}, key = "p" },
   hotkey_cycle    = { mods = {"cmd","alt"}, key = ";" },
   hotkey_reload   = { mods = {"cmd","alt"}, key = "r" },
@@ -34,6 +36,8 @@ local watcher = nil
 local current_state = nil
 local revert_timer = nil      -- celebrate → sleep auto-revert
 local variant_timer = nil     -- periodic reroll inside variant states
+local idle_timer = nil        -- demote stale state to sleep
+local last_event_at = 0       -- secondsSinceEpoch of the last on_state_change call
 
 local function read_file(path)
   local f = io.open(path, "r")
@@ -153,9 +157,21 @@ local function on_state_change()
   end
 
   current_state = state
+  last_event_at = hs.timer.secondsSinceEpoch()
   render(visual)
 
   if state == "celebrate" then schedule_revert() end
+end
+
+local function check_idle()
+  if not current_state or current_state == "sleep" or current_state == "celebrate" then
+    return -- already sleeping, or celebrate has its own revert
+  end
+  local elapsed = hs.timer.secondsSinceEpoch() - last_event_at
+  if elapsed >= (config.idle_threshold or 180) then
+    local f = io.open(STATE_FILE, "w")
+    if f then f:write("sleep\n"); f:close() end
+  end
 end
 
 local function on_path_event(paths)
@@ -203,6 +219,10 @@ function M.start()
     end
   end)
 
+  -- Idle watchdog: if no hook event has updated the state for a long time,
+  -- demote whatever we're showing to sleep.
+  idle_timer = hs.timer.doEvery(config.idle_check or 30, check_idle)
+
   hs.hotkey.bind(config.hotkey_toggle.mods, config.hotkey_toggle.key, M.toggle)
   hs.hotkey.bind(config.hotkey_cycle.mods,  config.hotkey_cycle.key,  M.cycle_corner)
   hs.hotkey.bind(config.hotkey_reload.mods, config.hotkey_reload.key, M.reload)
@@ -213,6 +233,7 @@ function M.stop()
   if watcher then watcher:stop(); watcher = nil end
   if revert_timer then revert_timer:stop(); revert_timer = nil end
   if variant_timer then variant_timer:stop(); variant_timer = nil end
+  if idle_timer then idle_timer:stop(); idle_timer = nil end
   if webview then webview:delete(); webview = nil end
   current_state = nil
 end
