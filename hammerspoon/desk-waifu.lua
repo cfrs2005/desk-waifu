@@ -8,6 +8,7 @@ local DATA_DIR    = os.getenv("HOME") .. "/.desk-waifu"
 local STATE_FILE  = DATA_DIR .. "/state"
 local GIFS_DIR    = DATA_DIR .. "/gifs"
 local CONFIG_FILE = DATA_DIR .. "/config.json"
+local VIEWER_HTML = DATA_DIR .. "/viewer.html"
 
 local DEFAULTS = {
   size           = 240,
@@ -62,18 +63,23 @@ local function compute_frame()
   return { x = x, y = y, w = s, h = s }
 end
 
-local function html_for_state(state)
-  local gif_path = GIFS_DIR .. "/" .. state .. ".gif"
+local function write_viewer_html(state)
+  -- gif is loaded via a relative path so the document and the image share the
+  -- same file:// origin, sidestepping WKWebView's same-origin restrictions on
+  -- :html(string, baseURL).
   local cb = tostring(hs.timer.absoluteTime())
-  return string.format([[
+  local html = string.format([[
 <!doctype html>
-<html><head><style>
-  html,body{margin:0;padding:0;background:transparent;overflow:hidden;
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;width:100%%;height:100%%;
+    background:transparent;overflow:hidden;
     -webkit-user-select:none;user-select:none;cursor:default;}
-  img{width:100%%;height:100%%;object-fit:contain;}
+  img{display:block;width:100vw;height:100vh;object-fit:contain;}
 </style></head>
-<body><img src="file://%s?%s" alt=""/></body></html>
-]], gif_path, cb)
+<body><img src="gifs/%s.gif?%s" alt=""/></body></html>
+]], state, cb)
+  local f = io.open(VIEWER_HTML, "w")
+  if f then f:write(html); f:close() end
 end
 
 local function ensure_webview()
@@ -95,7 +101,8 @@ end
 
 local function render(state)
   ensure_webview()
-  webview:html(html_for_state(state), "file://" .. GIFS_DIR .. "/")
+  write_viewer_html(state)
+  webview:url("file://" .. VIEWER_HTML)
   if not webview:isVisible() then webview:show() end
 end
 
