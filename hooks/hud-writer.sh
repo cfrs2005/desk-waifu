@@ -8,6 +8,7 @@ DATA_DIR="${HOME}/.desk-waifu"
 HUD_FILE="${DATA_DIR}/hud"
 TASK_FILE="${DATA_DIR}/task"
 LOG_FILE="${DATA_DIR}/hud.log"
+PROSE_HASH_FILE="${DATA_DIR}/.last-prose-hash"
 
 mkdir -p "${DATA_DIR}" 2>/dev/null || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -16,6 +17,19 @@ PAYLOAD="$(cat 2>/dev/null || true)"
 [ -z "${PAYLOAD}" ] && exit 0
 
 get() { printf '%s' "${PAYLOAD}" | jq -r "$1 // empty" 2>/dev/null; }
+
+# 从 transcript_path 反向扫到最近一个 assistant text 块。
+# Claude Code 把 thinking / text / tool_use 切成三种 JSONL 行，
+# 每行是一个 content block；取 type==assistant 且 message.content[].type==text 的最后一条。
+last_assistant_prose() {
+  local tp="$1"
+  [ -z "${tp}" ] || [ ! -f "${tp}" ] && return
+  jq -rs '
+    map(select(.type == "assistant"))
+    | map(.message.content[]? | select(.type == "text") | .text)
+    | last // empty
+  ' "${tp}" 2>/dev/null
+}
 # grapheme-safe 截断: 按 unicode 字符数 (非字节) 切, 末尾追加 …。
 # 用 python3 (macOS 自带), 编码处理直接, 不会双重编码。
 # fallback: 没 python3 就退到字节截断 (老行为, 可能出乱码但不阻塞)。
@@ -42,6 +56,39 @@ basenm() {
 EVENT="$(get '.hook_event_name')"
 TOOL="$( get '.tool_name')"
 EXIT="$( get '.tool_response.exit_code // .tool_response_exit_code')"
+TX="$(  get '.transcript_path')"
+
+# ── 散文优先：如果转录里有新 prose 就直接拿来当 HUD ────────────────
+# 命中分支: PreToolUse / PostToolUse / Stop. 其它 (UserPromptSubmit / Notification /
+# SessionStart) 仍走各自原本的特殊逻辑, 不被散文劫持.
+case "${EVENT}" in
+  PreToolUse|PostToolUse|Stop)
+    if [ -n "${TX}" ]; then
+      PROSE="$(last_assistant_prose "${TX}")"
+      if [ -n "${PROSE}" ] && [ "${PROSE}" != "null" ]; then
+        # 去 markdown 噪音 (** _ `): 视觉减负, 不动语义
+        PROSE_CLEAN="$(printf '%s' "${PROSE}" | sed -E 's/\*\*//g; s/`//g' | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//')"
+        # 60 字符（含中英文字符）, 头部最有信息密度
+        PROSE_SHORT="$(short "${PROSE_CLEAN}" 60)"
+        # 取整段 prose 的 md5 哈希做 dedup —— 不是截短后的, 防"前 60 字相同 + 后续不同"漏推
+        PROSE_HASH="$(printf '%s' "${PROSE_CLEAN}" | md5)"
+        LAST_HASH="$(cat "${PROSE_HASH_FILE}" 2>/dev/null || echo "")"
+        if [ "${PROSE_HASH}" != "${LAST_HASH}" ]; then
+          LINE="💬 ${PROSE_SHORT}"
+          printf '%s' "${PROSE_HASH}" > "${PROSE_HASH_FILE}" 2>/dev/null
+          TS="$(date +%s%N 2>/dev/null || date +%s)"
+          TMP="${HUD_FILE}.tmp.$$"
+          printf '%s\t%s\n' "${TS}" "${LINE}" > "${TMP}" 2>/dev/null && mv -f "${TMP}" "${HUD_FILE}" 2>/dev/null
+          if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
+            printf '[%s] %-18s -> (prose) %s\n' "$(date '+%H:%M:%S')" "${EVENT}/${TOOL:-?}" "${LINE}" >> "${LOG_FILE}" 2>/dev/null
+          fi
+          exit 0
+        fi
+        # 散文没变 → 继续走下面的工具活动分支
+      fi
+    fi
+    ;;
+esac
 
 # ── 工具静默名单 (config.hud_mute) ─────────────────────────────
 # 默认 mute: Edit/MultiEdit/TodoWrite/TaskCreate/TaskUpdate
