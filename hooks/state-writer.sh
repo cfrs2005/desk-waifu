@@ -14,6 +14,40 @@ mkdir -p "${DATA_DIR}" 2>/dev/null || exit 0
 # Read all of stdin (small JSON, hook payloads are typically <4KB)
 PAYLOAD="$(cat 2>/dev/null || true)"
 
+# Append to rolling journal (ndjson) for the cognition loop.
+JOURNAL="${DATA_DIR}/journal.ndjson"
+if command -v jq >/dev/null 2>&1; then
+  TS_NOW="$(date +%s)"
+  printf '%s' "${PAYLOAD}" | jq -c --arg ts "${TS_NOW}" '{
+    ts: ($ts|tonumber),
+    event: .hook_event_name,
+    tool: .tool_name,
+    exit: (.tool_response.exit_code // .tool_response_exit_code // null),
+    cmd: (.tool_input.command // null),
+    path: (.tool_input.file_path // .tool_input.path // null),
+    notif: .message
+  }' 2>/dev/null >> "${JOURNAL}" || true
+  # Keep last 256 lines
+  LINES=$(wc -l < "${JOURNAL}" 2>/dev/null || echo 0)
+  if [ "${LINES}" -gt 320 ]; then
+    tail -n 256 "${JOURNAL}" > "${JOURNAL}.trim" 2>/dev/null && mv -f "${JOURNAL}.trim" "${JOURNAL}" 2>/dev/null
+  fi
+fi
+
+# Fire-and-forget bubble narrator for end-of-turn / notification / errors.
+# Backgrounded so the GLM round-trip never blocks Claude Code.
+BUBBLE_WRITER="${DATA_DIR}/bubble-writer.sh"
+if [ -x "${BUBBLE_WRITER}" ]; then
+  case "${PAYLOAD}" in
+    *'"hook_event_name":"UserPromptSubmit"'*|\
+    *'"hook_event_name":"Stop"'*|\
+    *'"hook_event_name":"Notification"'*|\
+    *'"hook_event_name":"PostToolUse"'*)
+      ( printf '%s' "${PAYLOAD}" | nohup "${BUBBLE_WRITER}" >/dev/null 2>&1 & ) >/dev/null 2>&1
+      ;;
+  esac
+fi
+
 # Pull fields with jq if available; fall back to regex grep so we never hard-fail
 get_field() {
   local key="$1"
