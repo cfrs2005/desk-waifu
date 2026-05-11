@@ -16,9 +16,22 @@ PAYLOAD="$(cat 2>/dev/null || true)"
 [ -z "${PAYLOAD}" ] && exit 0
 
 get() { printf '%s' "${PAYLOAD}" | jq -r "$1 // empty" 2>/dev/null; }
+# grapheme-safe 截断: 按 unicode 字符数 (非字节) 切, 末尾追加 …。
+# 用 python3 (macOS 自带), 编码处理直接, 不会双重编码。
+# fallback: 没 python3 就退到字节截断 (老行为, 可能出乱码但不阻塞)。
 short() {
-  local s="$1" n="${2:-60}"
-  printf '%s' "${s}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//' | head -c "${n}"
+  local s n
+  s="$(printf '%s' "$1" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//')"
+  n="${2:-60}"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import sys
+s, n = sys.argv[1], int(sys.argv[2])
+sys.stdout.write(s if len(s) <= n else s[:n] + "…")
+' "$s" "$n" 2>/dev/null
+  else
+    printf '%s' "$s" | head -c "$n"
+  fi
 }
 basenm() {
   local p="$1"
@@ -57,11 +70,15 @@ case "${EVENT}" in
   UserPromptSubmit)
     P="$(get '.prompt // .user_prompt')"
     if [ -n "${P}" ]; then
-      LINE="💬 $(short "${P}" 80)"
-      # 同时写到 task pin，持续挂在 bubble 顶部直到 Stop / 下一次 UserPromptSubmit
+      # HUD: 一行短摘要 (grapheme-safe), 出现在右下气泡流水
+      LINE="💬 $(short "${P}" 40)"
+      # TASK: 写完整 prompt 不截断 (PRD §4.5: 用户输入永不截断, 自动撑高).
+      #       Lua 端 user_canvas 自动按 max_w 换行多行展示.
+      # 把 prompt 中可能的换行折成空格, 避免破坏 ts\ttext 单行格式.
+      P_CLEAN="$(printf '%s' "${P}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//')"
       TS_PIN="$(date +%s%N 2>/dev/null || date +%s)"
       TMP_T="${TASK_FILE}.tmp.$$"
-      printf '%s\t%s\n' "${TS_PIN}" "${LINE}" > "${TMP_T}" 2>/dev/null && mv -f "${TMP_T}" "${TASK_FILE}" 2>/dev/null
+      printf '%s\t%s\n' "${TS_PIN}" "${P_CLEAN}" > "${TMP_T}" 2>/dev/null && mv -f "${TMP_T}" "${TASK_FILE}" 2>/dev/null
     fi
     ;;
   PreToolUse)
@@ -131,7 +148,8 @@ case "${EVENT}" in
     ;;
   Notification)
     M="$(get '.message')"
-    LINE="🔔 $(short "${M}" 80)"
+    # 前导 \1 (SOH) 是 sticky 标记: Lua 端识别后不启动 fade_timer (PRD §4.7).
+    LINE="$(printf '\1')🔔 $(short "${M}" 80)"
     ;;
   Stop)
     LINE="✓ 回合结束"

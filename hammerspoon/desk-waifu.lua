@@ -52,7 +52,8 @@ local STATE_LINES = {
 }
 
 local config = {}
-local webview, bubble_canvas
+local webview
+local user_canvas, claude_canvas, glm_canvas, bubble_canvas  -- bubble_canvas 留作旧 show_static_line 路径
 local state_watcher, screen_watcher, light_tap, drag_tap
 local cached_hw                          -- 拖动期缓存 webview:hswindow()，省 ObjC 桥
 local last_move_at = 0
@@ -67,7 +68,7 @@ local pending_hud_text, pending_hud_timer = nil, nil
 local hud_fade_timer = nil
 local task_text = nil   -- 持久任务条（UserPromptSubmit 写入，Stop 清空）
 local hud_text  = nil   -- 当前 HUD 一行（800ms 节流，8s 自动清）
-local bubble_source = nil  -- nil | "glm" | "hud" | "static"
+local glm_text  = nil   -- 当前 GLM persona 一行（sticky，下一条 GLM 或 sleep 清）
 local drag = nil
 
 -- ──────────────────────────────────────────────────────────────────
@@ -236,14 +237,12 @@ local function pick_variant(state)
 end
 
 -- ──────────────────────────────────────────────────────────────────
--- bubble
+-- bubbles (3 channels: user / claude-fact / claude-persona)
+-- 设计依据: docs/bubble-tips-prd.md §4 聊天分栏式
+--   - user (task)   : 右对齐, 暖色 #6B7AFF α0.7, 14px, 不截断自动撑高
+--   - claude (hud)  : 左对齐, 冷色 #2A2A2E α0.5, 13px, 最多 3 行 grapheme 安全截断
+--   - glm   (persona): 沿用 claude 槽, 但 ✨ 前缀 + 暖描边, 替换 claude 内容直到 sleep
 -- ──────────────────────────────────────────────────────────────────
-local function hide_bubble()
-  if bubble_canvas then bubble_canvas:delete(); bubble_canvas = nil end
-  if bubble_timer then bubble_timer:stop(); bubble_timer = nil end
-  bubble_source = nil
-end
-
 local function screen_of_point(x, y)
   for _, sc in ipairs(hs.screen.allScreens()) do
     local sf = sc:frame()
@@ -254,25 +253,53 @@ local function screen_of_point(x, y)
   return hs.screen.mainScreen()
 end
 
-local function show_bubble(text)
-  if not webview then return end
-  hide_bubble()
-  local wf = webview:frame()
-  local pad_x, pad_y = 12, 8
-  local fs = config.bubble_font_size or 14
-  local max_w = config.bubble_max_width or 320
-  local max_lines = config.bubble_max_lines or 3
-  local inner_w_cap = max_w - pad_x * 2
+-- 按 grapheme(utf8) 截断, 末尾追加 …。绝不切在多字节中段。
+local function ellipsize(text, max_bytes)
+  if not text or #text <= max_bytes then return text end
+  -- 找到不超过 max_bytes 的最近 utf8 字符边界
+  local ok, cut = pcall(utf8.offset, text, -1, max_bytes + 1)
+  if not ok or not cut then return text:sub(1, max_bytes) .. "…" end
+  return text:sub(1, cut - 1) .. "…"
+end
 
-  -- 用系统真实排版测字号尺寸，避免估算偏差
+-- 测排版尺寸. style 必须含 font/color/paragraphStyle.
+local function measure(text, fs, max_w_inner, alignment)
   local style = {
     font = { name = ".AppleSystemUIFont", size = fs },
     color = { white = 1 },
-    paragraphStyle = { alignment = "center" },
+    paragraphStyle = { alignment = alignment or "left" },
   }
-  local natural = hs.drawing.getTextDrawingSize(text, style) or { w = #text * fs, h = fs * 1.3 }
+  return hs.drawing.getTextDrawingSize(text, style)
+      or { w = #text * fs * 0.6, h = fs * 1.3 }
+end
+
+-- forward decls so callbacks can refer to layout 函数
+local relayout_bubbles
+local hide_user_bubble, hide_claude_bubble, hide_glm_bubble, hide_bubble
+
+-- 单个气泡构造: 返回 canvas, w, h. 不放置 (relayout 负责定位)
+local function build_bubble_canvas(opts)
+  local pad_x = opts.pad_x or 12
+  local pad_y = opts.pad_y or 8
+  local fs = opts.font_size
+  local max_w = opts.max_w
+  local inner_w_cap = max_w - pad_x * 2
+  local text = opts.text
+  local alignment = opts.alignment or "left"
+
+  local natural = measure(text, fs, inner_w_cap, alignment)
   local line_h = natural.h
-  local lines = math.min(max_lines, math.max(1, math.ceil(natural.w / inner_w_cap)))
+  local needed_lines = math.max(1, math.ceil(natural.w / inner_w_cap))
+  local lines = opts.max_lines and math.min(opts.max_lines, needed_lines) or needed_lines
+
+  -- 触发截断: 重新测量截短文本
+  if opts.max_lines and needed_lines > opts.max_lines then
+    -- 估算每行能容纳的字节数 (粗略, utf8 中文按 ~1.5x fs 宽)
+    local approx_chars = math.floor(inner_w_cap / (fs * 0.55))
+    local budget = approx_chars * opts.max_lines
+    text = ellipsize(text, budget * 3)  -- *3 因为中文 utf8 3 字节
+  end
+
   local est_w
   if lines == 1 then
     est_w = math.min(max_w, math.ceil(natural.w) + pad_x * 2)
@@ -281,72 +308,174 @@ local function show_bubble(text)
   end
   local est_h = math.ceil(line_h * lines) + pad_y * 2
 
-  -- 关键：用 waifu 中心点判屏，不要用鼠标所在屏。双屏下鼠标可能在另一块屏。
-  local screen = screen_of_point(wf.x + wf.w / 2, wf.y + wf.h / 2)
-  local sf = screen:frame()
-  local x = wf.x + (wf.w - est_w) / 2
-  local y = wf.y - est_h - 6
-  if y < sf.y + 4 then y = wf.y + wf.h + 6 end
-  if x < sf.x + 4 then x = sf.x + 4 end
-  if x + est_w > sf.x + sf.w - 4 then x = sf.x + sf.w - est_w - 4 end
-
-  bubble_canvas = hs.canvas.new({ x = x, y = y, w = est_w, h = est_h })
-  bubble_canvas:level(hs.canvas.windowLevels.overlay)
-  bubble_canvas:behavior({ "canJoinAllSpaces", "stationary" })
-  bubble_canvas[#bubble_canvas + 1] = {
+  local c = hs.canvas.new({ x = 0, y = 0, w = est_w, h = est_h })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  c[#c + 1] = {
     type = "rectangle",
-    roundedRectRadii = { xRadius = 10, yRadius = 10 },
-    fillColor = { red = 0.10, green = 0.12, blue = 0.14, alpha = 0.92 },
-    strokeColor = { red = 0.95, green = 0.78, blue = 0.55, alpha = 0.85 },
-    strokeWidth = 1.2,
+    roundedRectRadii = { xRadius = 12, yRadius = 12 },
+    fillColor = opts.fill,
+    strokeColor = opts.stroke,
+    strokeWidth = opts.stroke_w or 1.0,
   }
-  bubble_canvas[#bubble_canvas + 1] = {
+  c[#c + 1] = {
     type = "text",
     text = text,
-    textColor = { red = 0.98, green = 0.93, blue = 0.80, alpha = 1 },
+    textColor = opts.text_color,
     textSize = fs,
-    textAlignment = "center",
+    textAlignment = alignment,
     frame = { x = pad_x, y = pad_y, w = est_w - pad_x * 2, h = est_h - pad_y * 2 },
   }
-  bubble_canvas:show()
+  return c, est_w, est_h
+end
 
-  -- sticky 模式：bubble_hold <= 0 时不自动隐藏，由下一条台词或 sleep 状态清除
-  local hold = config.bubble_hold or 0
-  if hold > 0 then
-    bubble_timer = hs.timer.doAfter(hold, hide_bubble)
+-- 三个气泡叠放在 waifu 上方. 顺序 (从上到下): user → claude/glm.
+-- user 右对齐到 waifu 右边缘, claude 左对齐到 waifu 左边缘. 视觉模拟聊天分栏.
+relayout_bubbles = function()
+  if not webview then return end
+  local wf = webview:frame()
+  local screen = screen_of_point(wf.x + wf.w / 2, wf.y + wf.h / 2)
+  local sf = screen:frame()
+  local gap = 6
+
+  local cl = claude_canvas or glm_canvas  -- 同槽位互斥, glm 优先
+  local us = user_canvas
+
+  -- 计算高度从下到上堆叠
+  local cur_y = wf.y - gap
+
+  if cl then
+    local cf = cl:frame()
+    local x = wf.x  -- 左对齐 waifu 左边缘
+    if x < sf.x + 4 then x = sf.x + 4 end
+    if x + cf.w > sf.x + sf.w - 4 then x = sf.x + sf.w - cf.w - 4 end
+    cur_y = cur_y - cf.h
+    if cur_y < sf.y + 4 then cur_y = sf.y + 4 end
+    cl:topLeft({ x = x, y = cur_y })
+    cur_y = cur_y - gap
+  end
+
+  if us then
+    local uf = us:frame()
+    local x = wf.x + wf.w - uf.w  -- 右对齐 waifu 右边缘
+    if x < sf.x + 4 then x = sf.x + 4 end
+    if x + uf.w > sf.x + sf.w - 4 then x = sf.x + sf.w - uf.w - 4 end
+    cur_y = cur_y - uf.h
+    if cur_y < sf.y + 4 then cur_y = sf.y + 4 end
+    us:topLeft({ x = x, y = cur_y })
   end
 end
 
--- 组合渲染：task 行（持久）和 HUD 行（瞬态）同时存在时两行展示。
--- 任一变化都重新 compose；都为空时 hide。
-local function compose_bubble()
-  if not webview then return end
-  if bubble_source == "glm" and bubble_canvas then return end  -- GLM sticky 时让位
-  local lines = {}
-  if task_text and task_text ~= "" then table.insert(lines, task_text) end
-  if hud_text  and hud_text  ~= "" then table.insert(lines, hud_text)  end
-  if #lines == 0 then hide_bubble(); return end
-  show_bubble(table.concat(lines, "\n"))
-  bubble_source = "hud"
+hide_user_bubble = function()
+  if user_canvas then user_canvas:delete(); user_canvas = nil end
+end
+
+hide_claude_bubble = function()
+  if claude_canvas then claude_canvas:delete(); claude_canvas = nil end
+end
+
+hide_glm_bubble = function()
+  if glm_canvas then glm_canvas:delete(); glm_canvas = nil end
+  glm_text = nil
+end
+
+-- 兼容旧调用点 (drag, sleep, stop): 一键清三槽
+hide_bubble = function()
+  hide_user_bubble()
+  hide_claude_bubble()
+  hide_glm_bubble()
+  if bubble_canvas then bubble_canvas:delete(); bubble_canvas = nil end
   if bubble_timer then bubble_timer:stop(); bubble_timer = nil end
 end
 
+local function show_user_bubble(text)
+  if not webview then return end
+  hide_user_bubble()
+  if not text or text == "" then relayout_bubbles(); return end
+  local c, _, _ = build_bubble_canvas({
+    text        = text,
+    font_size   = config.user_font_size or 14,
+    max_w       = config.bubble_max_width or 320,
+    -- 不设 max_lines: 用户输入永不截断, 自动撑高 (PRD §4.5)
+    pad_x = 14, pad_y = 10,
+    alignment   = "left",
+    fill        = { red = 0.42, green = 0.48, blue = 1.00, alpha = 0.78 },
+    stroke      = { red = 0.55, green = 0.62, blue = 1.00, alpha = 0.55 },
+    text_color  = { white = 1, alpha = 1 },
+  })
+  user_canvas = c
+  user_canvas:show()
+  relayout_bubbles()
+end
+
+local function show_claude_bubble(text)
+  if not webview then return end
+  hide_glm_bubble()  -- 新事实进来时让位 glm
+  hide_claude_bubble()
+  if not text or text == "" then relayout_bubbles(); return end
+  local c, _, _ = build_bubble_canvas({
+    text        = text,
+    font_size   = config.claude_font_size or 13,
+    max_w       = math.floor((config.bubble_max_width or 320) * 0.92),
+    max_lines   = 3,
+    pad_x = 12, pad_y = 8,
+    alignment   = "left",
+    fill        = { red = 0.16, green = 0.17, blue = 0.19, alpha = 0.78 },
+    stroke      = { red = 0.50, green = 0.50, blue = 0.55, alpha = 0.45 },
+    text_color  = { red = 0.82, green = 0.82, blue = 0.85, alpha = 1 },
+  })
+  claude_canvas = c
+  claude_canvas:show()
+  relayout_bubbles()
+end
+
+local function show_glm_bubble(text)
+  if not webview then return end
+  hide_claude_bubble()  -- 同槽
+  hide_glm_bubble()
+  if not text or text == "" then relayout_bubbles(); return end
+  glm_text = text
+  local c, _, _ = build_bubble_canvas({
+    text        = "✨ " .. text,
+    font_size   = config.claude_font_size or 13,
+    max_w       = math.floor((config.bubble_max_width or 320) * 0.92),
+    max_lines   = 3,
+    pad_x = 12, pad_y = 8,
+    alignment   = "left",
+    fill        = { red = 0.16, green = 0.17, blue = 0.19, alpha = 0.88 },
+    stroke      = { red = 0.95, green = 0.78, blue = 0.55, alpha = 0.75 },
+    text_color  = { red = 0.98, green = 0.93, blue = 0.80, alpha = 1 },
+    stroke_w    = 1.2,
+  })
+  glm_canvas = c
+  glm_canvas:show()
+  relayout_bubbles()
+end
+
 local function render_hud_now(text)
+  -- sticky 哨兵: 前导 \1 (SOH) = 不自动 fade (PRD §4.7, Notification/PermissionRequest).
+  local sticky = false
+  if text and text:sub(1, 1) == "\1" then
+    sticky = true
+    text = text:sub(2)
+  end
   hud_text = text
   last_hud_shown_at = hs.timer.secondsSinceEpoch()
-  compose_bubble()
-  if hud_fade_timer then hud_fade_timer:stop() end
-  hud_fade_timer = hs.timer.doAfter(config.hud_hold_max or 8, function()
-    hud_text = nil
-    compose_bubble()
-  end)
+  show_claude_bubble(text)
+  if hud_fade_timer then hud_fade_timer:stop(); hud_fade_timer = nil end
+  if not sticky then
+    hud_fade_timer = hs.timer.doAfter(config.hud_hold_max or 8, function()
+      hud_text = nil
+      if claude_canvas then hide_claude_bubble(); relayout_bubbles() end
+    end)
+  end
 end
 
 local function on_task_change()
   local raw = read_file(TASK_FILE)
   if not raw or raw == "" then
     task_text = nil
-    compose_bubble()
+    hide_user_bubble(); relayout_bubbles()
     return
   end
   local ts, text = raw:match("^(%d+)\t(.-)\n?$")
@@ -355,7 +484,15 @@ local function on_task_change()
   if ts_num > 0 and ts_num <= last_task_ts then return end
   last_task_ts = ts_num
   task_text = (text and text ~= "") and text or nil
-  compose_bubble()
+  if task_text then
+    -- 新一轮开始: 清掉上一轮残留的 claude 气泡 + sticky alert (PRD §4.7).
+    if hud_fade_timer then hud_fade_timer:stop(); hud_fade_timer = nil end
+    hud_text = nil
+    hide_claude_bubble()
+    show_user_bubble(task_text)
+  else
+    hide_user_bubble(); relayout_bubbles()
+  end
 end
 
 local function on_hud_change()
@@ -367,11 +504,11 @@ local function on_hud_change()
   last_hud_ts = ts_num
   if not text or text == "" then return end
 
-  -- 节流：上条 HUD 还没显示满 min_show 秒，就缓存到 pending，等到点再 flush
+  -- 节流: 上条 HUD 还没显示满 min_show 秒, 就缓存到 pending, 等到点再 flush
   local now = hs.timer.secondsSinceEpoch()
   local min_show = config.hud_min_show or 0.8
   local elapsed = now - last_hud_shown_at
-  if bubble_source == "hud" and elapsed < min_show then
+  if claude_canvas and elapsed < min_show then
     pending_hud_text = text
     if not pending_hud_timer then
       pending_hud_timer = hs.timer.doAfter(min_show - elapsed, function()
@@ -385,18 +522,17 @@ local function on_hud_change()
   render_hud_now(text)
 end
 
--- 状态机切换时短显的本地静态台词。HUD 通道在岗时基本看不到它（HUD 频率更高）。
+-- 状态机切换时短显的本地静态台词. 路由到 claude 槽以保持单一布局.
 local function show_static_line(state)
   if not webview then return end
-  if bubble_source == "glm" and bubble_canvas then return end
+  if glm_canvas then return end  -- glm 在场让位
   local pool = (config.state_lines and config.state_lines[state]) or STATE_LINES[state]
   if not pool or #pool == 0 then return end
   local text = pool[math.random(#pool)]
-  show_bubble(text)
-  bubble_source = "static"
+  show_claude_bubble(text)
   if bubble_timer then bubble_timer:stop() end
   bubble_timer = hs.timer.doAfter(config.static_line_hold or 5, function()
-    if bubble_source == "static" then hide_bubble() end
+    if claude_canvas then hide_claude_bubble(); relayout_bubbles() end
   end)
 end
 
@@ -460,11 +596,10 @@ local function on_bubble_change()
   local ts_num = tonumber(ts or "") or hs.timer.secondsSinceEpoch()
   if ts_num <= last_bubble_ts then return end
   last_bubble_ts = ts_num
-  hide_thinking()  -- 真台词到了，吞掉 thinking 点点
+  hide_thinking()  -- 真台词到了, 吞掉 thinking 点点
   if text and text ~= "" then
-    show_bubble(text)
-    bubble_source = "glm"
-    if bubble_timer then bubble_timer:stop(); bubble_timer = nil end  -- GLM sticky
+    show_glm_bubble(text)
+    if bubble_timer then bubble_timer:stop(); bubble_timer = nil end
   end
 end
 
@@ -582,6 +717,10 @@ local function finalize_drag()
   end
   save_position(fr, screen)
   current_screen_uuid = screen:getUUID()
+  -- 拖动结束: 把仍然在 state 中的气泡重新画回新位置
+  if task_text  then show_user_bubble(task_text)   end
+  if glm_text   then show_glm_bubble(glm_text)
+  elseif hud_text then show_claude_bubble(hud_text) end
 end
 
 local function ensure_drag_tap()
@@ -614,8 +753,9 @@ end
 
 local function begin_drag(mode, p, wf)
   drag = { dx = p.x - wf.x, dy = p.y - wf.y, mode = mode, start_wf = wf }
-  if bubble_canvas then hide_bubble() end
-  cached_hw = nil  -- 拖动开始重新拿一次 hswindow，避免 reload 后引用旧句柄
+  -- 拖动期暂时藏起所有气泡, finalize_drag 后由 task/hud 状态自然恢复
+  hide_bubble()
+  cached_hw = nil  -- 拖动开始重新拿一次 hswindow, 避免 reload 后引用旧句柄
   ensure_drag_tap()
   if drag_tap and not drag_tap:isEnabled() then drag_tap:start() end
 end
@@ -683,6 +823,7 @@ function M.reposition()
   local fr, screen = compute_frame()
   webview:frame(fr)
   current_screen_uuid = screen:getUUID()
+  relayout_bubbles()
 end
 
 function M.start()
