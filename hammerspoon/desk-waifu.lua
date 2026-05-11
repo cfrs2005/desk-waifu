@@ -7,6 +7,8 @@ local M = {}
 local DATA_DIR     = os.getenv("HOME") .. "/.desk-waifu"
 local STATE_FILE   = DATA_DIR .. "/state"
 local BUBBLE_FILE  = DATA_DIR .. "/bubble"
+local HUD_FILE     = DATA_DIR .. "/hud"
+local TASK_FILE    = DATA_DIR .. "/task"
 local THINK_FILE   = DATA_DIR .. "/thinking"
 local SPEECH_TICK  = DATA_DIR .. "/speech-tick.sh"
 local GIFS_DIR     = DATA_DIR .. "/gifs"
@@ -27,6 +29,8 @@ local DEFAULTS = {
   bubble_max_lines= 3,
   bubble_font_size= 14,
   speech_tick_period = 300,         -- 主动台词检查间隔（秒）
+  hud_min_show      = 0.8,          -- 每条 HUD 至少显示秒数（节流，防闪烁）
+  hud_hold_max      = 8,             -- HUD 后多久仍无新事件就淡出（秒）
   positions       = {},             -- { [screen_uuid] = { x_pct=, y_pct= } }
   hotkey_toggle   = { mods = {"cmd","alt"}, key = "p" },
   hotkey_cycle    = { mods = {"cmd","alt"}, key = ";" },
@@ -35,13 +39,35 @@ local DEFAULTS = {
 
 local VARIANTS = { coding = { "coding", "fix_bug" } }
 
+-- 本地静态台词池：状态机切换时随机抽一句，5 秒短显，零网络零限速。
+-- GLM 写到 ~/.desk-waifu/bubble 的 sticky 台词永远高优先级，会立刻覆盖静态台词。
+-- sleep / idle_blink 故意留空：休息时不打扰。celebrate 也留空，让 GLM 来发挥。
+local STATE_LINES = {
+  coding      = { "敲敲敲", "代码行起来", "字符蹦跶", "tab 补全救我", "回车快充", "这一行有点意思" },
+  peek        = { "让我瞅一眼", "翻翻文件", "啊这", "翻页中", "目录树爬一爬", "找找看" },
+  loading     = { "等它编译", "进度条加油", "这段抱一会", "我数羊呢", "依赖装不完啊", "等啊等" },
+  fix_bug     = { "扳手哪去了", "啧啧啧", "这 bug 谁种的", "重启大法好", "再读一遍", "嗯？" },
+  supervise   = { "在监督呢", "盯着主人", "嗯哼", "你这步要小心", "看你的" },
+  error_shrug = { "啊？！", "翻车了", "再来一次", "exit code 不太对劲", "嗯…重试" },
+}
+
 local config = {}
 local webview, bubble_canvas
-local state_watcher, screen_watcher, drag_tap
+local state_watcher, screen_watcher, light_tap, drag_tap
+local cached_hw                          -- 拖动期缓存 webview:hswindow()，省 ObjC 桥
+local last_move_at = 0
+local MOVE_MIN_DT  = 1 / 90              -- 节流到 ~90Hz，主线程不堵
 local current_state, current_screen_uuid
 local revert_timer, variant_timer, idle_timer, bubble_timer, speech_timer
 local thinking_canvas, thinking_anim_timer
 local last_event_at, last_bubble_ts = 0, 0
+local last_hud_ts, last_hud_shown_at = 0, 0
+local last_task_ts = 0
+local pending_hud_text, pending_hud_timer = nil, nil
+local hud_fade_timer = nil
+local task_text = nil   -- 持久任务条（UserPromptSubmit 写入，Stop 清空）
+local hud_text  = nil   -- 当前 HUD 一行（800ms 节流，8s 自动清）
+local bubble_source = nil  -- nil | "glm" | "hud" | "static"
 local drag = nil
 
 -- ──────────────────────────────────────────────────────────────────
@@ -215,6 +241,7 @@ end
 local function hide_bubble()
   if bubble_canvas then bubble_canvas:delete(); bubble_canvas = nil end
   if bubble_timer then bubble_timer:stop(); bubble_timer = nil end
+  bubble_source = nil
 end
 
 local function screen_of_point(x, y)
@@ -290,6 +317,89 @@ local function show_bubble(text)
   end
 end
 
+-- 组合渲染：task 行（持久）和 HUD 行（瞬态）同时存在时两行展示。
+-- 任一变化都重新 compose；都为空时 hide。
+local function compose_bubble()
+  if not webview then return end
+  if bubble_source == "glm" and bubble_canvas then return end  -- GLM sticky 时让位
+  local lines = {}
+  if task_text and task_text ~= "" then table.insert(lines, task_text) end
+  if hud_text  and hud_text  ~= "" then table.insert(lines, hud_text)  end
+  if #lines == 0 then hide_bubble(); return end
+  show_bubble(table.concat(lines, "\n"))
+  bubble_source = "hud"
+  if bubble_timer then bubble_timer:stop(); bubble_timer = nil end
+end
+
+local function render_hud_now(text)
+  hud_text = text
+  last_hud_shown_at = hs.timer.secondsSinceEpoch()
+  compose_bubble()
+  if hud_fade_timer then hud_fade_timer:stop() end
+  hud_fade_timer = hs.timer.doAfter(config.hud_hold_max or 8, function()
+    hud_text = nil
+    compose_bubble()
+  end)
+end
+
+local function on_task_change()
+  local raw = read_file(TASK_FILE)
+  if not raw or raw == "" then
+    task_text = nil
+    compose_bubble()
+    return
+  end
+  local ts, text = raw:match("^(%d+)\t(.-)\n?$")
+  if not ts then text = raw:gsub("[\r\n]+$", "") end
+  local ts_num = tonumber(ts or "") or 0
+  if ts_num > 0 and ts_num <= last_task_ts then return end
+  last_task_ts = ts_num
+  task_text = (text and text ~= "") and text or nil
+  compose_bubble()
+end
+
+local function on_hud_change()
+  local raw = read_file(HUD_FILE); if not raw or raw == "" then return end
+  local ts, text = raw:match("^(%d+)\t(.-)\n?$")
+  if not ts then text = raw:gsub("[\r\n]+$", "") end
+  local ts_num = tonumber(ts or "") or 0
+  if ts_num <= last_hud_ts then return end
+  last_hud_ts = ts_num
+  if not text or text == "" then return end
+
+  -- 节流：上条 HUD 还没显示满 min_show 秒，就缓存到 pending，等到点再 flush
+  local now = hs.timer.secondsSinceEpoch()
+  local min_show = config.hud_min_show or 0.8
+  local elapsed = now - last_hud_shown_at
+  if bubble_source == "hud" and elapsed < min_show then
+    pending_hud_text = text
+    if not pending_hud_timer then
+      pending_hud_timer = hs.timer.doAfter(min_show - elapsed, function()
+        pending_hud_timer = nil
+        local t = pending_hud_text; pending_hud_text = nil
+        if t then render_hud_now(t) end
+      end)
+    end
+    return
+  end
+  render_hud_now(text)
+end
+
+-- 状态机切换时短显的本地静态台词。HUD 通道在岗时基本看不到它（HUD 频率更高）。
+local function show_static_line(state)
+  if not webview then return end
+  if bubble_source == "glm" and bubble_canvas then return end
+  local pool = (config.state_lines and config.state_lines[state]) or STATE_LINES[state]
+  if not pool or #pool == 0 then return end
+  local text = pool[math.random(#pool)]
+  show_bubble(text)
+  bubble_source = "static"
+  if bubble_timer then bubble_timer:stop() end
+  bubble_timer = hs.timer.doAfter(config.static_line_hold or 5, function()
+    if bubble_source == "static" then hide_bubble() end
+  end)
+end
+
 -- ── thinking 小气泡（GLM 调用 in-flight 时显示） ─────────────────
 local function hide_thinking()
   if thinking_anim_timer then thinking_anim_timer:stop(); thinking_anim_timer = nil end
@@ -351,7 +461,11 @@ local function on_bubble_change()
   if ts_num <= last_bubble_ts then return end
   last_bubble_ts = ts_num
   hide_thinking()  -- 真台词到了，吞掉 thinking 点点
-  if text and text ~= "" then show_bubble(text) end
+  if text and text ~= "" then
+    show_bubble(text)
+    bubble_source = "glm"
+    if bubble_timer then bubble_timer:stop(); bubble_timer = nil end  -- GLM sticky
+  end
 end
 
 -- ──────────────────────────────────────────────────────────────────
@@ -381,12 +495,21 @@ local function on_state_change()
     revert_timer:stop(); revert_timer = nil
   end
 
+  local prev_state = current_state
   current_state = state
   last_event_at = hs.timer.secondsSinceEpoch()
   render(visual)
   -- 进入 sleep 时清空气泡：状态条已无承诺，留着是噪音
   if state == "sleep" then hide_bubble(); hide_thinking() end
   if state == "celebrate" then schedule_revert() end
+
+  -- 注：静态池已下岗。HUD 通道（hud-writer.sh → /hud 文件）每个事件都会
+  -- 写一行事实，频率比状态切换更密、信息量更高。
+  -- 如果你想要回静态吐槽，把下面那行解注释；保留时机判断避免覆盖 GLM。
+  -- if state ~= prev_state and state ~= "sleep" and state ~= "celebrate" then
+  --   show_static_line(state)
+  -- end
+  if state == prev_state then return end  -- noop branch
 end
 
 local function check_idle()
@@ -401,6 +524,8 @@ local function on_path_event(paths)
   for _, p in ipairs(paths or {}) do
     if     p:match("/state$")    then on_state_change()
     elseif p:match("/bubble$")   then on_bubble_change()
+    elseif p:match("/hud$")      then on_hud_change()
+    elseif p:match("/task$")     then on_task_change()
     elseif p:match("/thinking$") then on_thinking_change()
     end
   end
@@ -415,21 +540,36 @@ local function point_in_frame(p, fr)
 end
 
 -- 触控板友好的拖动：按住 ⌥(option) 在 waifu 上移动指针即拖；松开 ⌥ 自动保存。
--- 同时保留鼠标按住拖（leftMouseDragged）作为有鼠标场景下的快捷路径。
+-- 鼠标按住拖（leftMouseDragged）仍然能用，自动二选一。
+--
+-- 性能要点：
+-- - light_tap 常驻，只订阅 leftMouseDown / flagsChanged（低频）
+-- - drag_tap 仅拖动期 :start()/:stop()，订阅 mouseMoved / leftMouseDragged / leftMouseUp
+-- - move_to 节流到 ~90Hz，并缓存 webview:hswindow() 避免每帧 ObjC 桥调用
+
 local function move_to(nx, ny)
   if not webview then return end
-  local hw = webview.hswindow and webview:hswindow()
-  if hw then
-    hw:setTopLeft({ x = nx, y = ny })
+  local now = hs.timer.secondsSinceEpoch()
+  if now - last_move_at < MOVE_MIN_DT then return end
+  last_move_at = now
+  cached_hw = cached_hw or (webview.hswindow and webview:hswindow())
+  if cached_hw then
+    cached_hw:setTopLeft({ x = nx, y = ny })
   else
     local wf = webview:frame()
     webview:frame({ x = nx, y = ny, w = wf.w, h = wf.h })
   end
 end
 
+local function stop_drag_tap()
+  if drag_tap and drag_tap:isEnabled() then drag_tap:stop() end
+end
+
 local function finalize_drag()
   if not drag then return end
   drag = nil
+  stop_drag_tap()
+  if not webview then return end
   local fr = webview:frame()
   local mx, my = fr.x + fr.w / 2, fr.y + fr.h / 2
   local screen = pick_screen()
@@ -444,59 +584,73 @@ local function finalize_drag()
   current_screen_uuid = screen:getUUID()
 end
 
-local function start_drag_tap()
+local function ensure_drag_tap()
   if drag_tap then return end
   local et = hs.eventtap.event.types
   drag_tap = hs.eventtap.new(
-    { et.leftMouseDown, et.leftMouseDragged, et.leftMouseUp,
-      et.mouseMoved, et.flagsChanged },
+    { et.mouseMoved, et.leftMouseDragged, et.leftMouseUp },
+    function(ev)
+      if not drag or not webview then return false end
+      local t = ev:getType()
+      local p = hs.mouse.absolutePosition()
+      if t == et.mouseMoved then
+        if drag.mode == "opt" then move_to(p.x - drag.dx, p.y - drag.dy) end
+        return false
+      end
+      if t == et.leftMouseDragged then
+        if drag.mode == "btn" then
+          move_to(p.x - drag.dx, p.y - drag.dy)
+          return true
+        end
+        return false
+      end
+      if t == et.leftMouseUp then
+        if drag.mode == "btn" then finalize_drag(); return true end
+        return false
+      end
+      return false
+    end)
+end
+
+local function begin_drag(mode, p, wf)
+  drag = { dx = p.x - wf.x, dy = p.y - wf.y, mode = mode, start_wf = wf }
+  if bubble_canvas then hide_bubble() end
+  cached_hw = nil  -- 拖动开始重新拿一次 hswindow，避免 reload 后引用旧句柄
+  ensure_drag_tap()
+  if drag_tap and not drag_tap:isEnabled() then drag_tap:start() end
+end
+
+local function start_light_tap()
+  if light_tap then return end
+  local et = hs.eventtap.event.types
+  light_tap = hs.eventtap.new(
+    { et.leftMouseDown, et.flagsChanged },
     function(ev)
       if not webview or not webview:isVisible() then return false end
       local t = ev:getType()
       local p = hs.mouse.absolutePosition()
       local wf = webview:frame()
-      local flags = ev:getFlags()
-      local opt_down = flags and flags.alt
 
-      -- option modifier path（触控板首选）
       if t == et.flagsChanged then
+        local flags = ev:getFlags()
+        local opt_down = flags and flags.alt
         if opt_down and not drag and point_in_frame(p, wf) then
-          drag = { dx = p.x - wf.x, dy = p.y - wf.y, mode = "opt" }
-          if bubble_canvas then hide_bubble() end
+          begin_drag("opt", p, wf)
         elseif not opt_down and drag and drag.mode == "opt" then
           finalize_drag()
         end
         return false
       end
 
-      if t == et.mouseMoved then
-        if drag and drag.mode == "opt" then
-          move_to(p.x - drag.dx, p.y - drag.dy)
-        end
-        return false
-      end
-
-      -- 鼠标按住拖动路径（有外接鼠标时仍然能用）
       if t == et.leftMouseDown then
         if point_in_frame(p, wf) and not drag then
-          drag = { dx = p.x - wf.x, dy = p.y - wf.y, mode = "btn" }
-          if bubble_canvas then hide_bubble() end
-          return true
-        end
-      elseif t == et.leftMouseDragged then
-        if drag and drag.mode == "btn" then
-          move_to(p.x - drag.dx, p.y - drag.dy)
-          return true
-        end
-      elseif t == et.leftMouseUp then
-        if drag and drag.mode == "btn" then
-          finalize_drag()
+          begin_drag("btn", p, wf)
           return true
         end
       end
       return false
     end)
-  drag_tap:start()
+  light_tap:start()
 end
 
 -- ──────────────────────────────────────────────────────────────────
@@ -558,14 +712,15 @@ function M.start()
   -- 显示器插拔 / 主屏切换时重定位
   screen_watcher = hs.screen.watcher.new(M.reposition):start()
 
-  start_drag_tap()
+  start_light_tap()
 
   hs.hotkey.bind(config.hotkey_toggle.mods, config.hotkey_toggle.key, M.toggle)
   hs.hotkey.bind(config.hotkey_cycle.mods,  config.hotkey_cycle.key,  M.cycle_corner)
   hs.hotkey.bind(config.hotkey_reload.mods, config.hotkey_reload.key, M.reload)
 
-  -- 启动时拉一次 bubble（如果有遗留）
+  -- 启动时拉一次 bubble / task（拾取上次遗留的 pin）
   on_bubble_change()
+  on_task_change()
 
   print("[desk-waifu] started, state=" .. tostring(current_state))
 end
@@ -574,10 +729,16 @@ function M.stop()
   if state_watcher  then state_watcher:stop();  state_watcher  = nil end
   if screen_watcher then screen_watcher:stop(); screen_watcher = nil end
   if drag_tap       then drag_tap:stop();       drag_tap       = nil end
+  if light_tap      then light_tap:stop();      light_tap      = nil end
+  cached_hw = nil; drag = nil; last_move_at = 0
   if revert_timer   then revert_timer:stop();   revert_timer   = nil end
   if variant_timer  then variant_timer:stop();  variant_timer  = nil end
   if idle_timer     then idle_timer:stop();     idle_timer     = nil end
   if speech_timer   then speech_timer:stop();   speech_timer   = nil end
+  if pending_hud_timer then pending_hud_timer:stop(); pending_hud_timer = nil end
+  if hud_fade_timer    then hud_fade_timer:stop();    hud_fade_timer    = nil end
+  pending_hud_text = nil
+  task_text = nil; hud_text = nil
   hide_thinking()
   hide_bubble()
   if webview then webview:delete(); webview = nil end
