@@ -14,15 +14,17 @@
   <img src="https://img.shields.io/badge/agent-Claude%20Code-7c3aed" alt="claude code"/>
 </p>
 
-`desk-waifu` 是一个 macOS 桌面浮窗，根据 [Claude Code](https://claude.com/claude-code) 当前的工作状态切换 GIF 动画。它写代码她就敲键盘，报错了她就摊手，编译跑着她就抱进度条。
+`desk-waifu` 是一个 macOS 桌面浮窗，根据 [Claude Code](https://claude.com/claude-code) 当前的工作状态切换 GIF 动画。它写代码她就敲键盘，报错了她就摊手，编译跑着她就抱进度条。可选挂上小模型（智谱 GLM-4-Flash 之类）做"傲娇台词气泡"，回合结束/错误/需要审批时她还会吐一句槽。
 
-整套架构非常轻：**Claude Code hooks → 写一个状态名到文件 → Hammerspoon 监听文件变更 → 切动画**。三段彼此解耦，挂哪段都不会卡 CLI。
+整套架构非常轻：**Claude Code hooks → 写一个状态名到文件 → Hammerspoon 监听文件变更 → 切动画**。可选的 LLM 旁路在同一个 hook 里 fork 出去后台调用，永远不阻塞 Claude Code。三段彼此解耦，挂哪段都不会卡 CLI。
 
 ## 这是什么 / 不是什么
 
 ✅ macOS + Claude Code + Hammerspoon 的桌面浮窗
 ✅ 根据 hook 事件自动切换 9 种动画
-✅ 完全本地，零网络
+✅ 可拖动、多显示器自适应（每屏独立记忆位置）
+✅ 可选 LLM 台词气泡（Stop / Notification / 报错时吐槽，用 GLM-4-Flash 等小模型即可，免费档够用）
+✅ 默认完全本地零网络；气泡功能不配 `glm.env` 就完全不启用
 ✅ 素材可替换（你的二次元老婆 / 自家吉祥物 / 公司 mascot）
 
 ❌ 不是 Claude Code 官方的 `/buddy`（那是愚人节彩蛋且只能选预置物种）
@@ -89,8 +91,15 @@ echo sleep  > ~/.desk-waifu/state    # 让她睡觉
 | 组合 | 行为 |
 |---|---|
 | ⌘⌥P | 显示 / 隐藏 |
-| ⌘⌥; | 切换屏幕角落（右下→左下→左上→右上） |
+| ⌘⌥; | 切换屏幕角落（右下→左下→左上→右上），并清掉**当前屏**的自定义位置 |
 | ⌘⌥R | 重载 |
+
+**拖动**（两条路径都行）：
+
+- **触控板**：按住 ⌥(option)，指针滑过 waifu 就跟着走，松开 ⌥ 自动保存位置。不需要 force-click，也不依赖系统设置里的「三指拖移」。
+- **鼠标**：左键按住浮窗直接拖。
+
+松手/松 ⌥ 时按每屏 UUID 把相对偏移（百分比）写进 `~/.desk-waifu/config.json`。换分辨率仍然保位，浮窗跑出屏外会自动 clamp 回来。换显示器/插拔外显时 `hs.screen.watcher` 也会自动重定位。
 
 ## 自定义素材
 
@@ -113,11 +122,55 @@ GIF 透明背景效果最佳。本仓库自带的 9 张是 chibi 风格妹子；
   "size": 240,
   "margin": 20,
   "corner": "bottom-right",
-  "level": "floating"
+  "level": "floating",
+  "bubble_hold": 6,
+  "bubble_max_width": 280,
+  "bubble_font_size": 14,
+  "positions": {
+    "<screen-UUID-自动写入>": { "x_pct": 0.82, "y_pct": 0.78 }
+  }
 }
 ```
 
-`level` 设为 `"popUpMenu"` 会更高优先级（盖住绝大多数普通窗口）。
+`level` 设为 `"popUpMenu"` 会更高优先级（盖住绝大多数普通窗口）。`positions` 由拖动自动维护，一般不用手改。
+
+## 台词气泡（可选）
+
+回合结束 / Claude 提醒 / 工具报错时，叫一个小模型用 ≤14 个汉字写一句傲娇 chibi 台词，浮窗顶上飘个气泡 6 秒就散。
+
+**为什么这么挑事件？** GLM 免费档限速严，每次 PreToolUse 都打肯定刷爆。所以只挑三类**对人有用**的时刻说话：完工庆祝、需要审批、踩坑摊手。
+
+### 接通智谱 GLM
+
+1. 去 [bigmodel.cn](https://open.bigmodel.cn/) 注册，复制 API Key。
+2. 把凭证写到 `~/.desk-waifu/glm.env`（**mode 600**，别提交到 git）：
+
+```bash
+cat > ~/.desk-waifu/glm.env <<'EOF'
+GLM_API_KEY=你的key
+GLM_MODEL=GLM-4-FlashX
+GLM_ENDPOINT=https://open.bigmodel.cn/api/paas/v4/chat/completions
+EOF
+chmod 600 ~/.desk-waifu/glm.env
+```
+
+> ⚠️ 智谱**没有** `GLM-4.7-Flash` 这个 SKU，用了会一直请求超时。实际免费可用的是 `GLM-4-Flash` / `GLM-4-FlashX`。
+
+3. 验证一下：
+
+```bash
+echo '{"hook_event_name":"Stop"}' | DESK_WAIFU_DEBUG=1 ~/.desk-waifu/bubble-writer.sh
+cat ~/.desk-waifu/bubble
+# 1778468756\t厉害了主人！
+```
+
+### 换别的小模型 / 自部署
+
+`bubble-writer.sh` 用的是 **OpenAI 兼容** chat completions 协议，只要支持 `{messages, max_tokens, temperature}` 的端点都能直接换：DeepSeek、月之暗面、SiliconFlow、本地 vLLM/Ollama 均可。改 `glm.env` 里的 `GLM_ENDPOINT` / `GLM_MODEL` / `GLM_API_KEY` 三个变量即可。
+
+### 改人设 / 改字数
+
+直接编辑 `~/.desk-waifu/bubble-writer.sh` 里的 `SYS_PROMPT`。默认人设是傲娇守桌 chibi、≤14 汉字、不加标点。气泡显示时长改 `bubble_hold`。
 
 ## 调试
 
@@ -135,20 +188,23 @@ echo '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response_exit_co
 ## 架构
 
 ```
-Claude Code  ──hooks──►  state-writer.sh  ──atomic write──►  ~/.desk-waifu/state
-                                                                     │
-                                                                     ▼
-                                                    Hammerspoon pathwatcher
-                                                                     │
-                          ┌──────────────────────────────────────────┘
-                          ▼
-                ~/.desk-waifu/viewer.html  ──file:// (same-origin)──►  gifs/<state>.gif
-                          ▲
-                          │
-                  hs.webview:url("file://...viewer.html")
+Claude Code ──hooks──►  state-writer.sh ──atomic write──►  ~/.desk-waifu/state ──┐
+                              │                                                   │
+                              │ (Stop / Notification / 错误事件)                   │
+                              ▼                                                   │
+                       bubble-writer.sh ──curl GLM─►  ~/.desk-waifu/bubble  ──────┤
+                       (后台 nohup, 永不阻塞)                                      │
+                                                                                  ▼
+                                                            Hammerspoon pathwatcher
+                                                                                  │
+                                       ┌──────────────────────────────────────────┘
+                                       ▼                          ▼
+                            ~/.desk-waifu/viewer.html       hs.canvas 气泡
+                                       ▲
+                              hs.webview:url("file://...")
 ```
 
-三段都是单向 fire-and-forget：hook 失败 / Lua crash / Hammerspoon 没开都不影响 Claude Code。
+三段都是单向 fire-and-forget：hook 失败 / GLM 限流 / Lua crash / Hammerspoon 没开都不影响 Claude Code。气泡功能没配 `glm.env` 时 `bubble-writer.sh` 直接 `exit 0`，整条旁路自然关闭。
 
 > 为什么要落一个 `viewer.html`？因为 `hs.webview:html(string, baseURL)` 加载的 HTML 算 `about:blank` 来源，从那去 `file://` 加载 GIF 会被 WKWebView 同源策略拦掉。把 HTML 写成磁盘文件再用 `:url("file://...")` 加载，HTML 和 GIF 同 `file://` 来源，限制就过了。
 
@@ -268,7 +324,34 @@ uninstall 用 `__desk_waifu` 标签精准删 hook 条目，不会动你的其它
 
 ### 多显示器场景
 
-`corner` 始终基于 `hs.screen.mainScreen()`（主显示器）。要让浮窗跟随活动屏幕，目前需要自己改 Lua（PR welcome）。
+浮窗会按**鼠标所在屏**定位（不再用 `hs.screen.mainScreen()`，避免外显接入时 main 跳屏带歪位置）。每个屏幕的自定义位置按 UUID 单独存在 `config.positions`，插拔外显或换分辨率都能保留。
+
+- 想恢复某屏到角落预设：把 waifu 拖到那块屏，按 ⌘⌥; 循环到想要的角，对应屏的自定义位置会被清掉。
+- 想完全重置位置：删 `~/.desk-waifu/config.json` 里的 `positions` 字段，或整段删掉重启 Hammerspoon。
+
+### 气泡不出现 / 一直没台词
+
+```bash
+# 1. 凭证文件在不在
+ls -la ~/.desk-waifu/glm.env
+
+# 2. 直接喂一个事件，看 bubble 文件有没有被写
+echo '{"hook_event_name":"Stop"}' | DESK_WAIFU_DEBUG=1 ~/.desk-waifu/bubble-writer.sh
+cat ~/.desk-waifu/bubble
+tail ~/.desk-waifu/bubble.log
+
+# 3. 直接打 endpoint 试连通性
+. ~/.desk-waifu/glm.env
+curl -sS --max-time 10 \
+  -H "Authorization: Bearer $GLM_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"model\":\"$GLM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":10}" \
+  "$GLM_ENDPOINT"
+```
+
+常见返回：
+- `1302` 速率限制 → 等一会再说，免费档很紧
+- `1305` 容量过大 → 同上，或换 `GLM-4-Flash` / `GLM-4-FlashX`
+- curl 一直 timeout → **大概率是模型名打错**（`GLM-4.7-Flash` 不存在，会一直 hang）
 
 ### 我用的不是 macOS
 

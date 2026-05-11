@@ -11,6 +11,7 @@ SNIPPET_FILE="${REPO_ROOT}/hooks/settings-snippet.json"
 LUA_NAME="desk-waifu.lua"
 LUA_SRC="${REPO_ROOT}/hammerspoon/${LUA_NAME}"
 HOOK_SRC="${REPO_ROOT}/hooks/state-writer.sh"
+BUBBLE_SRC="${REPO_ROOT}/hooks/bubble-writer.sh"
 GIFS_SRC="${REPO_ROOT}/assets/gifs"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -51,6 +52,22 @@ info "GIFs copied to ${DATA_DIR}/gifs/"
 cp -f "${HOOK_SRC}" "${DATA_DIR}/state-writer.sh"
 chmod +x "${DATA_DIR}/state-writer.sh"
 info "Hook installed at ${DATA_DIR}/state-writer.sh"
+
+if [ -f "${BUBBLE_SRC}" ]; then
+  cp -f "${BUBBLE_SRC}" "${DATA_DIR}/bubble-writer.sh"
+  chmod +x "${DATA_DIR}/bubble-writer.sh"
+  info "Bubble writer installed at ${DATA_DIR}/bubble-writer.sh"
+  if [ ! -f "${DATA_DIR}/glm.env" ]; then
+    cat > "${DATA_DIR}/glm.env.example" <<'EOF'
+# desk-waifu bubble narrator credentials. Copy to glm.env and fill in.
+# chmod 600 ~/.desk-waifu/glm.env after editing.
+GLM_API_KEY=your-api-key-here
+GLM_MODEL=GLM-4-FlashX
+GLM_ENDPOINT=https://open.bigmodel.cn/api/paas/v4/chat/completions
+EOF
+    info "Wrote ${DATA_DIR}/glm.env.example (copy to glm.env to enable bubbles)"
+  fi
+fi
 
 # --- Stage 3: Hammerspoon Lua --------------------------------------------
 mkdir -p "${HS_DIR}"
