@@ -174,6 +174,56 @@ cat ~/.desk-waifu/bubble
 
 直接编辑 `~/.desk-waifu/bubble-writer.sh` 里的 `SYS_PROMPT`。默认人设是傲娇守桌 chibi、≤14 汉字、不加标点。气泡显示时长改 `bubble_hold`。
 
+## 云端办公室（可选）
+
+把本机 chibi 的状态和台词旁路上报到云端 hub（项目 [`desk-waifu-office`](../desk-waifu-office/)），别的人可以在云端看到你今天的工作动画。
+
+**完全可选**：不配 `~/.desk-waifu/remote.env` 时整条逻辑 `exit 0` 沉默，本地零网络模式不受影响。失败也只走后台、`--max-time 3`，绝不阻塞 Claude Code。
+
+### 三步接通
+
+```bash
+# 1. 注册账号, 拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600)
+./scripts/remote-register.sh https://desk.example.com zhangqy
+
+# 2. 把本地 9 张 GIF 上传到 hub (基于 sha256, 已同步会返回 304 跳过)
+./scripts/remote-sync.sh
+# → 9 个 GIF: 6 已更新, 2 已同步(304), 1 失败
+
+# 3. 后续无需任何操作 — state-writer.sh / bubble-writer.sh 末尾自动 fork
+#    旁路: type=state | type=bubble 实时打到 POST $HUB_URL/events
+```
+
+观察事件流：
+
+```bash
+DESK_WAIFU_DEBUG=1 echo '{"hook_event_name":"UserPromptSubmit"}' \
+  | ~/.desk-waifu/state-writer.sh
+tail -f ~/.desk-waifu/remote-forward.log
+# [HH:MM:SS] agent=claude-code type=state value=coding -> HTTP 200 in 0.18s
+```
+
+### 工作原理
+
+- `remote-register.sh` 调 `POST /register {username}` → 拿 `{username, api_key}`。
+- `remote-sync.sh` 遍历 `~/.desk-waifu/gifs/*.gif`，逐个 `PUT /assets/<state>` 带 `Bearer` + `multipart gif` + `X-Content-Sha256`。失败重试 2 次（指数退避 1s/2s）。
+- `hooks/remote-forward.sh` 读 stdin 一行 JSON `{agent, type, value}`，每个 `agent` 在 `~/.desk-waifu/instances/<agent>.id` 维护一个 `uuidgen` 实例 id（`mkdir` 锁保证并发安全），生成 `X-Client-Id` 做幂等，`curl --max-time 3` fork 后台发到 `POST /events`。
+- 主 hook（`state-writer.sh` / `bubble-writer.sh`）末尾才追加 fork 调用，原有写文件的本地链路一字未动。
+
+### 脱钩
+
+```bash
+./scripts/remote-unregister.sh
+# 只清本地 remote.env + instances/, 不调 server 删账号 (首版不暴露 delete API)
+```
+
+### 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `DESK_WAIFU_AGENT` | `claude-code` | 区分 hook 来源 (如 `hermes` / `cursor`) |
+| `DESK_WAIFU_DEBUG` | `0` | 开启后旁路落 `~/.desk-waifu/remote-forward.log` |
+
 ## 调试
 
 ```bash

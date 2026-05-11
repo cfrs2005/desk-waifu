@@ -82,6 +82,14 @@ case "${EVENT}" in
           if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
             printf '[%s] %-18s -> (prose) %s\n' "$(date '+%H:%M:%S')" "${EVENT}/${TOOL:-?}" "${LINE}" >> "${LOG_FILE}" 2>/dev/null
           fi
+          # === remote forward: 散文也飘到 office（pet 在念她自己在干什么） ====
+          REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
+          if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
+            RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
+            RF_VALUE_JSON="$(printf '%s' "${LINE}" | jq -Rs '.' 2>/dev/null || printf '""')"
+            ( printf '{"agent":"%s","type":"hud","value":%s}' "${RF_AGENT}" "${RF_VALUE_JSON}" \
+              | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
+          fi
           exit 0
         fi
         # 散文没变 → 继续走下面的工具活动分支
@@ -122,6 +130,17 @@ case "${EVENT}" in
       TS_PIN="$(date +%s%N 2>/dev/null || date +%s)"
       TMP_T="${TASK_FILE}.tmp.$$"
       printf '%s\t%s\n' "${TS_PIN}" "${P_CLEAN}" > "${TMP_T}" 2>/dev/null && mv -f "${TMP_T}" "${TASK_FILE}" 2>/dev/null
+
+      # === remote forward bypass: 让 user 提问也飘到 office ====================
+      REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
+      if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
+        RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
+        # 用 short() 同款截断（office 端会再截到 120 字符兜底）
+        P_SHORT="$(short "${P_CLEAN}" 100)"
+        RF_VALUE_JSON="$(printf '%s' "👤 ${P_SHORT}" | jq -Rs '.' 2>/dev/null || printf '""')"
+        ( printf '{"agent":"%s","type":"hud","value":%s}' "${RF_AGENT}" "${RF_VALUE_JSON}" \
+          | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
+      fi
     fi
     exit 0
     ;;
@@ -224,6 +243,17 @@ printf '%s\t%s\n' "${TS}" "${LINE}" > "${TMP}" 2>/dev/null && mv -f "${TMP}" "${
 if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   printf '[%s] %-18s -> %s\n' "$(date '+%H:%M:%S')" "${EVENT}/${TOOL:-?}" "${LINE}" >> "${LOG_FILE}" 2>/dev/null
   tail -n 300 "${LOG_FILE}" > "${LOG_FILE}.trim" 2>/dev/null && mv -f "${LOG_FILE}.trim" "${LOG_FILE}" 2>/dev/null
+fi
+
+# === remote forward bypass (optional, fails open) =========================
+# 把 HUD 行 (👁 Read · foo / ✏️ Edit · bar / 散文) 异步推到云端 office。
+# 未配 ~/.desk-waifu/remote.env 时 remote-forward.sh 自己 exit 0, 整条静默。
+REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
+if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
+  RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
+  RF_VALUE_JSON="$(printf '%s' "${LINE}" | jq -Rs '.' 2>/dev/null || printf '""')"
+  ( printf '{"agent":"%s","type":"hud","value":%s}' "${RF_AGENT}" "${RF_VALUE_JSON}" \
+    | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
 fi
 
 exit 0

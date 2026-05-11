@@ -12,6 +12,7 @@ LUA_NAME="desk-waifu.lua"
 LUA_SRC="${REPO_ROOT}/hammerspoon/${LUA_NAME}"
 HOOK_SRC="${REPO_ROOT}/hooks/state-writer.sh"
 BUBBLE_SRC="${REPO_ROOT}/hooks/bubble-writer.sh"
+REMOTE_FWD_SRC="${REPO_ROOT}/hooks/remote-forward.sh"
 GIFS_SRC="${REPO_ROOT}/assets/gifs"
 HERMES_HOOK_SRC="${REPO_ROOT}/hooks/hermes"
 HERMES_HOOKS_DIR="${HOME}/.hermes/hooks"
@@ -69,6 +70,13 @@ GLM_ENDPOINT=https://open.bigmodel.cn/api/paas/v4/chat/completions
 EOF
     info "Wrote ${DATA_DIR}/glm.env.example (copy to glm.env to enable bubbles)"
   fi
+fi
+
+# Optional remote-forward bypass (云端办公室). 不配 remote.env 时整条沉默。
+if [ -f "${REMOTE_FWD_SRC}" ]; then
+  cp -f "${REMOTE_FWD_SRC}" "${DATA_DIR}/remote-forward.sh"
+  chmod +x "${DATA_DIR}/remote-forward.sh"
+  info "Remote forwarder installed at ${DATA_DIR}/remote-forward.sh (默认沉默, 需 remote-register.sh 激活)"
 fi
 
 # --- Stage 3: Hammerspoon Lua --------------------------------------------

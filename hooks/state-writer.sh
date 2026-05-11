@@ -139,5 +139,16 @@ if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   fi
 fi
 
+# === remote forward bypass (optional, fails open) ==========================
+# 未配 ~/.desk-waifu/remote.env 时 remote-forward.sh 自己 exit 0, 整条静默。
+# 这里只负责把 (agent, type, value) 编一行 JSON 喂给旁路, fork 后台不阻塞。
+REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
+[ -x "${REMOTE_FORWARD}" ] || REMOTE_FORWARD="$(dirname "$0")/remote-forward.sh"
+if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
+  RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
+  ( printf '{"agent":"%s","type":"state","value":"%s"}' "${RF_AGENT}" "${NEW_STATE}" \
+    | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
+fi
+
 # Always succeed so we never block Claude Code
 exit 0

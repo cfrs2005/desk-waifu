@@ -148,4 +148,16 @@ if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   tail -n 200 "${LOG_FILE}" > "${LOG_FILE}.trim" 2>/dev/null && mv -f "${LOG_FILE}.trim" "${LOG_FILE}" 2>/dev/null
 fi
 
+# === remote forward bypass (optional, fails open) ==========================
+# 把刚生成的台词以 type=bubble 转发到云端办公室。
+# 未配 remote.env 时旁路自己 exit 0, 整条沉默。
+REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
+[ -x "${REMOTE_FORWARD}" ] || REMOTE_FORWARD="$(dirname "$0")/remote-forward.sh"
+if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
+  RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
+  ( jq -nc --arg a "${RF_AGENT}" --arg v "${LINE}" \
+      '{agent:$a, type:"bubble", value:$v}' \
+    | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
+fi
+
 exit 0
