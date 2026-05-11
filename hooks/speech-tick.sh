@@ -21,6 +21,23 @@ ENV_FILE="${DATA_DIR}/glm.env"
 command -v jq   >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
+# 共享 bubble-writer 那套锁：避免主动台词撞到 ack 之类
+GLM_MIN_GAP="${GLM_MIN_GAP:-8}"
+GLM_LOCK_TTL="${GLM_LOCK_TTL:-15}"
+LOCK_FILE="${DATA_DIR}/glm.lock"
+LAST_OK_FILE_GLM="${DATA_DIR}/glm-last-ok"
+NOW_LOCK="$(date +%s)"
+if [ -f "${LOCK_FILE}" ]; then
+  LOCK_TS="$(cat "${LOCK_FILE}" 2>/dev/null || echo 0)"
+  [ "$(( NOW_LOCK - LOCK_TS ))" -lt "${GLM_LOCK_TTL}" ] && exit 0
+fi
+if [ -f "${LAST_OK_FILE_GLM}" ]; then
+  LAST_OK="$(cat "${LAST_OK_FILE_GLM}" 2>/dev/null || echo 0)"
+  [ "$(( NOW_LOCK - LAST_OK ))" -lt "${GLM_MIN_GAP}" ] && exit 0
+fi
+echo "${NOW_LOCK}" > "${LOCK_FILE}" 2>/dev/null
+trap 'rm -f "${LOCK_FILE}" 2>/dev/null' EXIT INT TERM
+
 NOW="$(date +%s)"
 WINDOW_BEGIN=$(( NOW - 300 ))           # 最近 5 分钟
 SILENCE_MIN=$(( ${SPEECH_MIN_GAP:-180} )) # 距离上次台词至少多少秒才再说
@@ -112,7 +129,8 @@ LINE="${LINE# }"; LINE="${LINE% }"
 TS="$(date +%s)"
 TMP="${BUBBLE_FILE}.tmp.$$"
 printf '%s\t%s\n' "${TS}" "${LINE}" > "${TMP}" 2>/dev/null && mv -f "${TMP}" "${BUBBLE_FILE}" 2>/dev/null
-echo "${TS}" > "${LAST_TICK_FILE}" 2>/dev/null
+echo "${TS}" > "${LAST_TICK_FILE}"    2>/dev/null
+echo "${TS}" > "${LAST_OK_FILE_GLM}"  2>/dev/null
 
 if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   printf '[%s] trig=%s ev=%s err=%s tool=%s -> %s\n' \

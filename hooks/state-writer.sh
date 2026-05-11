@@ -34,15 +34,21 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# Fire-and-forget HUD writer — visualization layer for every Claude decision.
+# 纯本地、零网络、几毫秒，背景跑也不阻塞。
+HUD_WRITER="${DATA_DIR}/hud-writer.sh"
+if [ -x "${HUD_WRITER}" ]; then
+  ( printf '%s' "${PAYLOAD}" | nohup "${HUD_WRITER}" >/dev/null 2>&1 & ) >/dev/null 2>&1
+fi
+
 # Fire-and-forget bubble narrator for end-of-turn / notification / errors.
 # Backgrounded so the GLM round-trip never blocks Claude Code.
 BUBBLE_WRITER="${DATA_DIR}/bubble-writer.sh"
 if [ -x "${BUBBLE_WRITER}" ]; then
+  # GLM 只在两类「需要温度」的稀疏时刻开口，其余交给 HUD 事实化展示。
   case "${PAYLOAD}" in
-    *'"hook_event_name":"UserPromptSubmit"'*|\
     *'"hook_event_name":"Stop"'*|\
-    *'"hook_event_name":"Notification"'*|\
-    *'"hook_event_name":"PostToolUse"'*)
+    *'"hook_event_name":"Notification"'*)
       ( printf '%s' "${PAYLOAD}" | nohup "${BUBBLE_WRITER}" >/dev/null 2>&1 & ) >/dev/null 2>&1
       ;;
   esac

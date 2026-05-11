@@ -21,6 +21,35 @@ mkdir -p "${DATA_DIR}" 2>/dev/null || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 command -v jq   >/dev/null 2>&1 || exit 0
 
+# ── 限流：单 slot 锁 + 最小间隔 ─────────────────────────────────
+# 数据告诉我们一次编码会话约 ~50 GLM/h（只走对话节点），单 slot 足够；
+# 8s 最小间隔挡住"用户快速连发回车"造成的并发。
+GLM_MIN_GAP="${GLM_MIN_GAP:-8}"
+GLM_LOCK_TTL="${GLM_LOCK_TTL:-15}"  # 锁过期：超过这么久认为前一次卡死
+LOCK_FILE="${DATA_DIR}/glm.lock"
+LAST_OK_FILE="${DATA_DIR}/glm-last-ok"
+NOW_TS="$(date +%s)"
+
+# 1) 有未过期的 in-flight 调用就让位
+if [ -f "${LOCK_FILE}" ]; then
+  LOCK_TS="$(cat "${LOCK_FILE}" 2>/dev/null || echo 0)"
+  if [ "$(( NOW_TS - LOCK_TS ))" -lt "${GLM_LOCK_TTL}" ]; then
+    exit 0
+  fi
+fi
+
+# 2) 距上次成功太近就让位（避免免费档限速）
+if [ -f "${LAST_OK_FILE}" ]; then
+  LAST_OK="$(cat "${LAST_OK_FILE}" 2>/dev/null || echo 0)"
+  if [ "$(( NOW_TS - LAST_OK ))" -lt "${GLM_MIN_GAP}" ]; then
+    exit 0
+  fi
+fi
+
+# 3) 拿锁，保证退出时释放
+echo "${NOW_TS}" > "${LOCK_FILE}" 2>/dev/null
+trap 'rm -f "${LOCK_FILE}" 2>/dev/null' EXIT INT TERM
+
 PAYLOAD="$(cat 2>/dev/null || true)"
 [ -z "${PAYLOAD}" ] && exit 0
 
@@ -93,6 +122,7 @@ LINE="$(printf '%s' "${LINE}" | awk '{ if (length($0) > 90) print substr($0,1,90
 TS="$(date +%s)"
 TMP="${BUBBLE_FILE}.tmp.$$"
 printf '%s\t%s\n' "${TS}" "${LINE}" > "${TMP}" 2>/dev/null && mv -f "${TMP}" "${BUBBLE_FILE}" 2>/dev/null
+echo "${TS}" > "${LAST_OK_FILE}" 2>/dev/null
 
 if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   printf '[%s] event=%s flavor=%s -> %s\n' "$(date '+%H:%M:%S')" "${EVENT}" "${FLAVOR}" "${LINE}" >> "${LOG_FILE}" 2>/dev/null
