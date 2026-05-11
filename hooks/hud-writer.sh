@@ -68,18 +68,15 @@ fi
 LINE=""
 case "${EVENT}" in
   UserPromptSubmit)
+    # 用户输入只走 task (蓝色 user 气泡); 不再写 HUD —— 灰色气泡回显用户原文是冗余信息.
     P="$(get '.prompt // .user_prompt')"
     if [ -n "${P}" ]; then
-      # HUD: 一行短摘要 (grapheme-safe), 出现在右下气泡流水
-      LINE="💬 $(short "${P}" 40)"
-      # TASK: 写完整 prompt 不截断 (PRD §4.5: 用户输入永不截断, 自动撑高).
-      #       Lua 端 user_canvas 自动按 max_w 换行多行展示.
-      # 把 prompt 中可能的换行折成空格, 避免破坏 ts\ttext 单行格式.
       P_CLEAN="$(printf '%s' "${P}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//')"
       TS_PIN="$(date +%s%N 2>/dev/null || date +%s)"
       TMP_T="${TASK_FILE}.tmp.$$"
       printf '%s\t%s\n' "${TS_PIN}" "${P_CLEAN}" > "${TMP_T}" 2>/dev/null && mv -f "${TMP_T}" "${TASK_FILE}" 2>/dev/null
     fi
+    exit 0
     ;;
   PreToolUse)
     case "${TOOL}" in
@@ -147,13 +144,16 @@ case "${EVENT}" in
     fi
     ;;
   Notification)
+    # CC 的 Notification message 通常是 "Claude Code needs your attention" 这种泛泛通知,
+    # 信息含量低, 不值得 sticky. 让它走正常 8s fade —— 主人看一眼就够.
     M="$(get '.message')"
-    # 前导 \1 (SOH) 是 sticky 标记: Lua 端识别后不启动 fade_timer (PRD §4.7).
-    LINE="$(printf '\1')🔔 $(short "${M}" 80)"
+    LINE="🔔 $(short "${M}" 80)"
     ;;
   Stop)
-    LINE="✓ 回合结束"
-    # 一轮结束，清掉任务 pin（写空文件触发 pathwatcher）
+    # Z 时代版收工台词. RANDOM 范围 0-32767, % 6 简单选一句.
+    POOL=("✓ 妥了" "✓ ohhh完事" "✓ 整完啦" "✓ 搞定~" "✓ 这就完了" "✓ 收工")
+    LINE="${POOL[$((RANDOM % ${#POOL[@]}))]}"
+    # 一轮结束, 清掉任务 pin (写空文件触发 pathwatcher)
     : > "${TASK_FILE}" 2>/dev/null
     ;;
   SubagentStop)

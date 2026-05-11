@@ -70,7 +70,26 @@ case "${EVENT}" in
     FLAVOR="ack"
     CTX="主人刚提的需求是：「${PROMPT}」"
     ;;
-  Stop)         FLAVOR="celebrate";  CTX="主人刚完成一个回合。" ;;
+  Stop)
+    FLAVOR="celebrate"
+    CTX="主人刚完成一个回合"
+    # 读 transcript 提取 Claude 最后段话, 让 GLM 拟人化时能点题 (而非泛泛道贺).
+    # transcript_path 是 jsonl, 每行一个事件; jq 取最后一条 assistant text.
+    TX="$(printf '%s' "${PAYLOAD}" | jq -r '.transcript_path // empty' 2>/dev/null)"
+    if [ -n "${TX}" ] && [ -f "${TX}" ]; then
+      LAST_TEXT="$(jq -rs '
+        map(select((.type == "assistant") or (.message.role == "assistant")))
+        | last
+        | (.message.content // .content // [])
+        | if type == "array" then
+            map(select(.type == "text") | .text) | join(" ")
+          else . end
+      ' "${TX}" 2>/dev/null | tr '\n' ' ' | head -c 500)"
+      if [ -n "${LAST_TEXT}" ] && [ "${LAST_TEXT}" != "null" ]; then
+        CTX="主人本回合完成. Claude 最后说: ${LAST_TEXT}"
+      fi
+    fi
+    ;;
   Notification) FLAVOR="alert";      CTX="Claude 需要主人注意： ${MSG}" ;;
   PostToolUse)
     [ -n "${EXIT}" ] && [ "${EXIT}" != "0" ] || exit 0
@@ -80,7 +99,7 @@ case "${EVENT}" in
   *) exit 0 ;;
 esac
 
-SYS_PROMPT='你是 desk-waifu，一个守在桌面角落的傲娇 chibi 助手。每次用一行 ≤20 个汉字的中文台词承接主人状态：俏皮、关心、偶尔吐槽，不解释、不加引号、不加表情、不加多余标点、不多行。\n- ack(收到需求): 提炼任务核心，给出"收到，开始做 xxx"语气，让主人确认你懂了。\n- celebrate(完成): 轻快道贺。\n- error(失败): 点出 cmd/工具名，鼓励主人。\n- alert(提醒): 提示主人去看。'
+SYS_PROMPT='你是 desk-waifu, 一个守在桌面角落的傲娇 chibi 助手。每次用一行 ≤20 个汉字的中文台词承接主人状态。语言风格: Z 时代口语、俏皮、偶尔玩梗或吐槽。不解释、不加引号、不加表情符号、不加多余标点、不多行。\n- ack(收到需求): 提炼任务核心, 给出"收到, 开始做 xxx"语气。\n- celebrate(完成): 必须基于上下文里 Claude 实际说的内容点题, 一句话呼应它做了啥(不是泛泛道贺)。例: 上下文是"已推送 v0.2.0", 你说"v0.2.0 起飞了"。\n- error(失败): 点出 cmd/工具名, 鼓励主人。\n- alert(提醒): 提示主人去看。'
 
 REQ="$(jq -n \
   --arg model "${GLM_MODEL}" \
