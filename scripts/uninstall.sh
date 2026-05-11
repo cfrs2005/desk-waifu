@@ -5,6 +5,7 @@ set -euo pipefail
 DATA_DIR="${HOME}/.desk-waifu"
 HS_DIR="${HOME}/.hammerspoon"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
+HERMES_HOOK_DIR="${HOME}/.hermes/hooks/desk-waifu"
 LUA_NAME="desk-waifu.lua"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -45,6 +46,12 @@ if [ -f "${HS_DIR}/init.lua" ]; then
     { print }
   ' "${HS_DIR}/init.lua" > "${TMP}" && mv -f "${TMP}" "${HS_DIR}/init.lua"
   info "Cleaned init.lua"
+fi
+
+# --- Stage 2.5: remove Hermes Agent hook (if present) -------------------
+if [ -d "${HERMES_HOOK_DIR}" ]; then
+  rm -rf "${HERMES_HOOK_DIR}"
+  info "Removed ${HERMES_HOOK_DIR}"
 fi
 
 # --- Stage 3: nuke data dir (asks first, unless --yes) -------------------

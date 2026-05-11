@@ -1,0 +1,10 @@
+name: desk-waifu
+description: Bridge Hermes Agent lifecycle events to ~/.desk-waifu/ chibi pet. Fire-and-forget — silently no-op if desk-waifu is not installed.
+events:
+  - gateway:startup
+  - session:start
+  - session:end
+  - session:reset
+  - agent:start
+  - agent:step
+  - agent:end

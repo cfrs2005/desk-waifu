@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/platform-macOS-black" alt="macos"/>
   <img src="https://img.shields.io/badge/needs-Hammerspoon-ff69b4" alt="hammerspoon"/>
   <img src="https://img.shields.io/badge/agent-Claude%20Code-7c3aed" alt="claude code"/>
+  <img src="https://img.shields.io/badge/agent-Hermes-2ea44f" alt="hermes agent"/>
 </p>
 
 `desk-waifu` 是一个 macOS 桌面浮窗，根据 [Claude Code](https://claude.com/claude-code) 当前的工作状态切换 GIF 动画。它写代码她就敲键盘，报错了她就摊手，编译跑着她就抱进度条。可选挂上小模型（智谱 GLM-4-Flash 之类）做"傲娇台词气泡"，回合结束/错误/需要审批时她还会吐一句槽。
@@ -21,6 +22,7 @@
 ## 这是什么 / 不是什么
 
 ✅ macOS + Claude Code + Hammerspoon 的桌面浮窗
+✅ 同时支持 Hermes Agent（详见 [`docs/HERMES.md`](docs/HERMES.md)）—— 安装时自动探测、自动接通
 ✅ 根据 hook 事件自动切换 9 种动画
 ✅ 可拖动、多显示器自适应（每屏独立记忆位置）
 ✅ 可选 LLM 台词气泡（Stop / Notification / 报错时吐槽，用 GLM-4-Flash 等小模型即可，免费档够用）
@@ -207,6 +209,29 @@ Claude Code ──hooks──►  state-writer.sh ──atomic write──►  ~
 三段都是单向 fire-and-forget：hook 失败 / GLM 限流 / Lua crash / Hammerspoon 没开都不影响 Claude Code。气泡功能没配 `glm.env` 时 `bubble-writer.sh` 直接 `exit 0`，整条旁路自然关闭。
 
 > 为什么要落一个 `viewer.html`？因为 `hs.webview:html(string, baseURL)` 加载的 HTML 算 `about:blank` 来源，从那去 `file://` 加载 GIF 会被 WKWebView 同源策略拦掉。把 HTML 写成磁盘文件再用 `:url("file://...")` 加载，HTML 和 GIF 同 `file://` 来源，限制就过了。
+
+## Hermes Agent 集成（可选）
+
+如果你装了 Hermes Agent，`./scripts/install.sh` 会**自动**把桥接 hook 拷到 `~/.hermes/hooks/desk-waifu/`，gateway 重启后 chibi 同时反映两套 Agent 的状态：
+
+| Hermes 事件 | chibi 反应 |
+|---|---|
+| `gateway:startup` | bubble: "Hermes 上线 · N 平台" |
+| `agent:start`     | task = 用户消息 / state = `loading` / 思考点亮 |
+| `agent:step`      | state 按工具类型切换（Read→peek、Edit→coding、Bash→loading）+ HUD 显示工具名 |
+| `agent:end`       | state = `celebrate` + HUD 显示响应摘要 |
+| `session:end`     | 清 task / state = `sleep` |
+
+没装 Hermes 时安装脚本会静默跳过这一步，整体零侵入。完整事件表、自定义方法、与 Claude Code 共存优先级的说明见 [`docs/HERMES.md`](docs/HERMES.md)。
+
+```bash
+# 安装后让 Hermes 加载 hook（启动时一次性扫描）
+launchctl kickstart -k gui/$UID/ai.hermes.gateway
+
+# 看是否加载成功
+grep "hook" ~/.hermes/logs/gateway.log | tail -3
+# [hooks] Loaded hook 'desk-waifu' for events: [...]
+```
 
 ## FAQ / Troubleshooting
 

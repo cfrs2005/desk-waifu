@@ -13,6 +13,8 @@ LUA_SRC="${REPO_ROOT}/hammerspoon/${LUA_NAME}"
 HOOK_SRC="${REPO_ROOT}/hooks/state-writer.sh"
 BUBBLE_SRC="${REPO_ROOT}/hooks/bubble-writer.sh"
 GIFS_SRC="${REPO_ROOT}/assets/gifs"
+HERMES_HOOK_SRC="${REPO_ROOT}/hooks/hermes"
+HERMES_HOOKS_DIR="${HOME}/.hermes/hooks"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
@@ -123,7 +125,22 @@ mv -f "${SETTINGS_FILE}.tmp" "${SETTINGS_FILE}"
 rm -f "${TMP_SNIPPET}"
 info "Merged hooks into ${SETTINGS_FILE}"
 
-# --- Stage 5: nudge Hammerspoon to reload --------------------------------
+# --- Stage 5: optional Hermes Agent hook ---------------------------------
+# If Hermes Agent is installed (~/.hermes/hooks/ exists), drop our HOOK.yaml +
+# handler.py into ~/.hermes/hooks/desk-waifu/ so Hermes's gateway picks it up
+# at next launch. If Hermes isn't installed, skip silently — it's optional.
+if [ -d "${HERMES_HOOKS_DIR}" ] && [ -d "${HERMES_HOOK_SRC}" ]; then
+  HERMES_TARGET="${HERMES_HOOKS_DIR}/desk-waifu"
+  mkdir -p "${HERMES_TARGET}"
+  cp -f "${HERMES_HOOK_SRC}/HOOK.yaml"  "${HERMES_TARGET}/HOOK.yaml"
+  cp -f "${HERMES_HOOK_SRC}/handler.py" "${HERMES_TARGET}/handler.py"
+  info "Hermes hook installed at ${HERMES_TARGET}"
+  info "  → restart Hermes gateway to load: launchctl kickstart -k gui/\$UID/ai.hermes.gateway"
+else
+  info "Hermes Agent not detected (no ~/.hermes/hooks/) — skipping bridge"
+fi
+
+# --- Stage 6: nudge Hammerspoon to reload --------------------------------
 if [ -x "/Applications/Hammerspoon.app/Contents/Resources/extensions/hs/ipc/bin/hs" ] \
     && command -v hs >/dev/null 2>&1; then
   hs -c 'hs.reload()' >/dev/null 2>&1 || true
