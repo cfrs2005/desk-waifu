@@ -1,40 +1,56 @@
-"""desk-waifu × Hermes Agent bridge.
+"""Bridge Hermes lifecycle events to the desk-waifu chibi pet.
 
-Installed by desk-waifu's `scripts/install.sh` into `~/.hermes/hooks/desk-waifu/`.
-Hermes discovers this directory at gateway startup (see Hermes
-`gateway/hooks.py`) and dispatches each declared event to `handle()`.
+Protocol: write files under ~/.desk-waifu/. Fire-and-forget; if the
+directory does not exist (desk-waifu not installed / Hammerspoon off),
+every call short-circuits to a no-op.
 
-Protocol — write files under `~/.desk-waifu/`:
-
-| event             | slot(s)                                       |
-|-------------------|-----------------------------------------------|
-| gateway:startup   | bubble  (greeting)                            |
-| session:start     | state=peek                                    |
-| session:end       | task=∅, state=sleep, thinking=off             |
-| session:reset     | task=∅, state=sleep, thinking=off             |
-| agent:start       | task=<user msg head>, state=loading, thinking |
-| agent:step        | state=<peek|coding|loading>, hud=🔧 <tool>    |
-| agent:end         | thinking=off, state=celebrate, hud=✓ <reply>  |
-
-All writes are atomic (`.tmp.<pid>` → `os.replace`) and fire-and-forget.
-If `~/.desk-waifu/` does not exist (chibi not installed / Hammerspoon off),
-every call short-circuits to a no-op. Errors are swallowed so the hook
-never breaks Hermes.
-
-Slot contract reference: desk-waifu README + `docs/HERMES.md`.
+See ~/Desktop/desk-waifu-integration.md for the slot contract.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 WF = Path.home() / ".desk-waifu"
+REMOTE_FORWARD = WF / "remote-forward.sh"
+REMOTE_ENV = WF / "remote.env"
 
 
 def _enabled() -> bool:
     return WF.is_dir()
+
+
+def _remote_forward(event_type: str, value: str) -> None:
+    """Async fire-and-forget bypass: pipe a JSON line into remote-forward.sh
+    with agent=hermes. The shell script handles env loading, instance_id,
+    ms timestamps, curl background, and silent-on-missing-config.
+
+    Why we have to be careful here:
+      - `cat` in remote-forward.sh blocks until EOF — we MUST close stdin
+      - Popen handle has to live long enough for the kernel to deliver the
+        bytes; if the Python process is short-lived, the child can be killed
+        before it sends the curl. start_new_session=True detaches it.
+      - We don't wait() — that would block Hermes."""
+    if not REMOTE_ENV.is_file() or not REMOTE_FORWARD.is_file():
+        return
+    try:
+        payload = json.dumps({"agent": "hermes", "type": event_type, "value": value})
+        proc = subprocess.Popen(
+            ["/bin/bash", str(REMOTE_FORWARD)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={**os.environ, "DESK_WAIFU_AGENT": "hermes"},
+        )
+        proc.stdin.write(payload.encode())
+        proc.stdin.close()  # ← critical: gives the bash side an EOF on cat
+    except Exception:
+        pass
 
 
 def _atomic_write(name: str, body: str) -> None:
@@ -52,54 +68,46 @@ def _atomic_write(name: str, body: str) -> None:
 
 def _state(name: str) -> None:
     _atomic_write("state", name + "\n")
+    _remote_forward("state", name)
 
 
 def _task(text: str | None) -> None:
-    if not text:
+    if text is None or text == "":
         _atomic_write("task", "")
         return
     ts = time.time_ns()
     _atomic_write("task", f"{ts}\t{text}\n")
+    _remote_forward("hud", f"💬 {text}")
 
 
 def _hud(text: str, sticky: bool = False) -> None:
     ts = time.time_ns()
     prefix = "\x01" if sticky else ""
     _atomic_write("hud", f"{ts}\t{prefix}{text}\n")
+    _remote_forward("hud", text)
 
 
 def _bubble(text: str | None) -> None:
-    if not text:
+    if text is None or text == "":
         _atomic_write("bubble", "")
         return
     ts = int(time.time())
     _atomic_write("bubble", f"{ts}\t{text}\n")
+    # Bubble has 28-char server cap; _short() already trims to 28 upstream.
+    _remote_forward("bubble", text[:28])
 
 
 def _thinking(on: bool) -> None:
-    _atomic_write("thinking", f"{int(time.time())}\n" if on else "")
+    if on:
+        _atomic_write("thinking", f"{int(time.time())}\n")
+    else:
+        _atomic_write("thinking", "")
 
 
+# Trim long inbound text to keep the chibi readable (~14 CJK chars ideal).
 def _short(text: str, limit: int = 28) -> str:
     text = (text or "").strip().replace("\n", " ")
     return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-# Coarse tool-name → state mapping. Last write wins; that's intentional.
-_PEEK = ("read", "grep", "search", "ls", "glob", "find", "fetch", "view")
-_CODE = ("edit", "write", "patch", "apply", "create_file", "str_replace")
-_LOAD = ("bash", "shell", "run", "exec", "install", "build", "compile")
-
-
-def _state_for_tool(name: str) -> str | None:
-    low = (name or "").lower()
-    if any(k in low for k in _PEEK):
-        return "peek"
-    if any(k in low for k in _CODE):
-        return "coding"
-    if any(k in low for k in _LOAD):
-        return "loading"
-    return None
 
 
 async def handle(event_type: str, context: dict) -> None:
@@ -133,13 +141,19 @@ async def handle(event_type: str, context: dict) -> None:
             return
 
         if event_type == "agent:step":
-            names = [n for n in (context.get("tool_names") or []) if n]
-            if not names:
+            names = context.get("tool_names") or []
+            shown = [n for n in names if n]
+            if not shown:
                 return
-            label = names[-1]
-            mapped = _state_for_tool(label)
-            if mapped:
-                _state(mapped)
+            label = shown[-1]
+            # Coarse state hint by tool family — last-write-wins is fine.
+            low = label.lower()
+            if any(k in low for k in ("read", "grep", "search", "ls", "glob", "find")):
+                _state("peek")
+            elif any(k in low for k in ("edit", "write", "patch", "apply")):
+                _state("coding")
+            elif any(k in low for k in ("bash", "shell", "run", "exec", "install", "build")):
+                _state("loading")
             _hud(f"🔧 {label}")
             return
 
@@ -152,4 +166,5 @@ async def handle(event_type: str, context: dict) -> None:
             return
 
     except Exception:
+        # Hermes already swallows hook errors, but be defensive.
         return
