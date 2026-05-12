@@ -79,9 +79,14 @@ else
 fi
 
 # 毫秒精度时间戳 (server 端按 ms 比较 Date.now())。
-# 优先级: GNU date %3N (gnu-coreutils) > python3 > perl > 秒*1000 兜底
-if TS_NOW="$(date +%s%3N 2>/dev/null)" && [ "${TS_NOW}" -gt 1000000000000 ] 2>/dev/null; then
-  : # GNU date 在 mac 上一般是 gdate, 本地原生 BSD date 不支持 %3N 会返回带 'N' 的串
+# 优先级: GNU date %3N > python3 > perl > 秒*1000 兜底
+#
+# 注意: 阿里云 Linux 的 date 不认 %3N 的精度修饰符, 把它当 %N 直接输出
+# 19 位纳秒 (BSD date 则输出带 'N' 字符的串)。所以我们严格要求 13 位才接受,
+# 否则跳到 python3 兜底。
+TS_NOW=""
+if CAND="$(date +%s%3N 2>/dev/null)" && [ "${#CAND}" = "13" ]; then
+  TS_NOW="${CAND}"
 elif command -v python3 >/dev/null 2>&1; then
   TS_NOW="$(python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null)"
 elif command -v perl >/dev/null 2>&1; then
