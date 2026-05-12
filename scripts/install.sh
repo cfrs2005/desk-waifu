@@ -22,19 +22,38 @@ info() { printf '  %s\n' "$*"; }
 err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32mok:\033[0m %s\n' "$*"; }
 
-bold "desk-waifu installer"
+# --- CLI flags ------------------------------------------------------------
+# --server / --no-gui : 跳过 Hammerspoon 检查 + Lua 安装。
+#   适用场景: Linux 服务器、远程 dev box、CI/CD 节点 —— 只想让 hook
+#   把事件转发到云端 office，不需要桌面浮窗 chibi。
+SERVER_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --server|--no-gui|--headless) SERVER_MODE=1 ;;
+  esac
+done
+
+if [ "${SERVER_MODE}" = "1" ]; then
+  bold "desk-waifu installer (server mode — 跳过 GUI)"
+else
+  bold "desk-waifu installer"
+fi
 
 # --- Dependency checks ----------------------------------------------------
-if [ ! -d "/Applications/Hammerspoon.app" ]; then
-  err "Hammerspoon not found in /Applications."
-  cat <<EOF
+if [ "${SERVER_MODE}" = "0" ]; then
+  if [ ! -d "/Applications/Hammerspoon.app" ]; then
+    err "Hammerspoon not found in /Applications."
+    cat <<EOF
 Install with:
   brew install --cask hammerspoon
 Then launch Hammerspoon once and grant Accessibility permission, then re-run this installer.
+
+(或者: 这是台服务器只要事件转发? 跑 ./scripts/install.sh --server)
 EOF
-  exit 1
+    exit 1
+  fi
+  ok "Hammerspoon found"
 fi
-ok "Hammerspoon found"
 
 if ! command -v jq >/dev/null 2>&1; then
   err "jq is required to merge Claude Code hook settings safely."
@@ -80,22 +99,27 @@ if [ -f "${REMOTE_FWD_SRC}" ]; then
 fi
 
 # --- Stage 3: Hammerspoon Lua --------------------------------------------
-mkdir -p "${HS_DIR}"
-cp -f "${LUA_SRC}" "${HS_DIR}/${LUA_NAME}"
-info "Lua installed at ${HS_DIR}/${LUA_NAME}"
-
-INIT_LUA="${HS_DIR}/init.lua"
-touch "${INIT_LUA}"
-LOAD_LINE="require('desk-waifu')"
-if ! grep -F -q "${LOAD_LINE}" "${INIT_LUA}"; then
-  {
-    echo ""
-    echo "-- desk-waifu (added by installer)"
-    echo "${LOAD_LINE}"
-  } >> "${INIT_LUA}"
-  info "Added require('desk-waifu') to init.lua"
+# Server mode 完全跳过这一段 —— 没桌面 GUI 的机器装 Lua 是死代码。
+if [ "${SERVER_MODE}" = "1" ]; then
+  info "Server mode: 跳过 Hammerspoon Lua 安装"
 else
-  info "init.lua already requires desk-waifu"
+  mkdir -p "${HS_DIR}"
+  cp -f "${LUA_SRC}" "${HS_DIR}/${LUA_NAME}"
+  info "Lua installed at ${HS_DIR}/${LUA_NAME}"
+
+  INIT_LUA="${HS_DIR}/init.lua"
+  touch "${INIT_LUA}"
+  LOAD_LINE="require('desk-waifu')"
+  if ! grep -F -q "${LOAD_LINE}" "${INIT_LUA}"; then
+    {
+      echo ""
+      echo "-- desk-waifu (added by installer)"
+      echo "${LOAD_LINE}"
+    } >> "${INIT_LUA}"
+    info "Added require('desk-waifu') to init.lua"
+  else
+    info "init.lua already requires desk-waifu"
+  fi
 fi
 
 # --- Stage 4: merge Claude Code hook settings ----------------------------

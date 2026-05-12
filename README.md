@@ -182,14 +182,23 @@ cat ~/.desk-waifu/bubble
 
 ### 一步接通
 
-```bash
-# 注册账号 → 拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600) → 顺手把
-# 本地 9 张 GIF 上传到 hub (基于 sha256, 已同步会 304 跳过)。一气呵成。
-./scripts/remote-register.sh https://desk.example.com zhangqy
+**macOS 桌面**（要浮窗 + 远端上报）：
 
-# 后续无需任何操作 — state-writer.sh / bubble-writer.sh / hud-writer.sh
-# 末尾自动 fork 旁路: state | bubble | hud 实时打到 POST $HUB_URL/events
+```bash
+./scripts/install.sh   # 装: hooks + Hammerspoon Lua + Claude Code settings + (检测到) Hermes 桥接
+./scripts/remote-register.sh https://desk.example.com zhangqy
+# ↑ 一条命令: 注册拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600)
+#   + 顺手把本地 9 张 GIF 上传到 hub (基于 sha256 去重, 已同步会 304 跳过)
 ```
+
+**服务器 / 远程 dev box / CI 节点（无桌面 GUI）** — 加 `--server`，**完全不需要 Hammerspoon**：
+
+```bash
+./scripts/install.sh --server   # 跳过 Hammerspoon/Lua, 只装 hooks + settings 注册
+./scripts/remote-register.sh https://desk.example.com zhangqy
+```
+
+两种模式都跑完后，state / bubble / hud 事件实时打到 `POST $HUB_URL/events`，无后续操作。
 
 想分两步（注册不传 GIF）的话加 `--no-sync`：
 
