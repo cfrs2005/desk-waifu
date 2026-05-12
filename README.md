@@ -180,18 +180,22 @@ cat ~/.desk-waifu/bubble
 
 **完全可选**：不配 `~/.desk-waifu/remote.env` 时整条逻辑 `exit 0` 沉默，本地零网络模式不受影响。失败也只走后台、`--max-time 3`，绝不阻塞 Claude Code。
 
-### 三步接通
+### 一步接通
 
 ```bash
-# 1. 注册账号, 拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600)
+# 注册账号 → 拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600) → 顺手把
+# 本地 9 张 GIF 上传到 hub (基于 sha256, 已同步会 304 跳过)。一气呵成。
 ./scripts/remote-register.sh https://desk.example.com zhangqy
 
-# 2. 把本地 9 张 GIF 上传到 hub (基于 sha256, 已同步会返回 304 跳过)
-./scripts/remote-sync.sh
-# → 9 个 GIF: 6 已更新, 2 已同步(304), 1 失败
+# 后续无需任何操作 — state-writer.sh / bubble-writer.sh / hud-writer.sh
+# 末尾自动 fork 旁路: state | bubble | hud 实时打到 POST $HUB_URL/events
+```
 
-# 3. 后续无需任何操作 — state-writer.sh / bubble-writer.sh 末尾自动 fork
-#    旁路: type=state | type=bubble 实时打到 POST $HUB_URL/events
+想分两步（注册不传 GIF）的话加 `--no-sync`：
+
+```bash
+./scripts/remote-register.sh https://desk.example.com zhangqy --no-sync
+./scripts/remote-sync.sh   # 之后手动跑
 ```
 
 观察事件流：
@@ -205,8 +209,8 @@ tail -f ~/.desk-waifu/remote-forward.log
 
 ### 工作原理
 
-- `remote-register.sh` 调 `POST /register {username}` → 拿 `{username, api_key}`。
-- `remote-sync.sh` 遍历 `~/.desk-waifu/gifs/*.gif`，逐个 `PUT /assets/<state>` 带 `Bearer` + `multipart gif` + `X-Content-Sha256`。失败重试 2 次（指数退避 1s/2s）。
+- `remote-register.sh` 调 `POST /register {username}` → 拿 `{username, api_key}` 写入 `remote.env`，**然后自动调 `remote-sync.sh`** 把 GIF 一并传上去（`--no-sync` 跳过）。
+- `remote-sync.sh` 遍历 `~/.desk-waifu/gifs/*.gif`，逐个 `PUT /assets/<state>` 带 `Bearer` + `multipart gif` + `X-Content-Sha256`。失败重试 2 次（指数退避 1s/2s）。可独立运行（重传、增改素材后用）。
 - `hooks/remote-forward.sh` 读 stdin 一行 JSON `{agent, type, value}`，每个 `agent` 在 `~/.desk-waifu/instances/<agent>.id` 维护一个 `uuidgen` 实例 id（`mkdir` 锁保证并发安全），生成 `X-Client-Id` 做幂等，`curl --max-time 3` fork 后台发到 `POST /events`。
 - 主 hook（`state-writer.sh` / `bubble-writer.sh`）末尾才追加 fork 调用，原有写文件的本地链路一字未动。
 

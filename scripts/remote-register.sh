@@ -84,12 +84,37 @@ chmod 600 "${ENV_FILE}"
 ok "凭证已落到 ${ENV_FILE} (mode 600)"
 ok "实例目录 ${INST_DIR}/ 已就绪"
 
+# ── 顺手把 GIF 也同步过去, 让 "注册" 一条龙 ──────────────────────────
+# 跳过条件:
+#   --no-sync  flag (兼容旧脚本, 想分两步的人)
+#   ~/.desk-waifu/gifs/ 不存在 (install.sh 还没跑)
+SYNC_SH="$(cd "$(dirname "$0")" && pwd)/remote-sync.sh"
+SKIP_SYNC=0
+for arg in "$@"; do
+  case "$arg" in --no-sync) SKIP_SYNC=1 ;; esac
+done
+
+if [ "${SKIP_SYNC}" = "1" ]; then
+  info ""
+  info "已传 --no-sync, 跳过 GIF 同步。手动跑: ${SYNC_SH}"
+elif [ ! -d "${DATA_DIR}/gifs" ] || [ -z "$(ls -A "${DATA_DIR}/gifs" 2>/dev/null)" ]; then
+  info ""
+  info "未发现 ${DATA_DIR}/gifs/ (install.sh 没跑过?) — 跳过 GIF 同步。"
+  info "  后续装好 desk-waifu 本体后跑: ${SYNC_SH}"
+elif [ ! -x "${SYNC_SH}" ]; then
+  info ""
+  info "找不到 remote-sync.sh 或不可执行 — 跳过 GIF 同步。"
+else
+  echo
+  bold "顺手同步 9 张 GIF 到 hub..."
+  "${SYNC_SH}" || info "(同步出错, 不致命; 稍后可重跑 ${SYNC_SH})"
+fi
+
 cat <<EOF
 
-下一步:
-  $(cd "$(dirname "$0")" && pwd)/remote-sync.sh
-    把 ~/.desk-waifu/gifs/ 下的 9 张 GIF 上传到 hub
+完成。后续 Claude Code / Hermes 触发的 state / bubble / hud 事件
+会自动旁路上报到 ${HUB_URL}。浏览器打开 ${HUB_URL%/}/ 就能看到
+@${SRV_USER} 工位活起来。
 
-完成后, 后续 state / bubble 事件会自动旁路上报到云端办公室。
 未配 remote.env 时整条逻辑沉默, 不影响本地体验。
 EOF
