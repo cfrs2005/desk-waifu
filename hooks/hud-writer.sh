@@ -131,14 +131,15 @@ case "${EVENT}" in
       TMP_T="${TASK_FILE}.tmp.$$"
       printf '%s\t%s\n' "${TS_PIN}" "${P_CLEAN}" > "${TMP_T}" 2>/dev/null && mv -f "${TMP_T}" "${TASK_FILE}" 2>/dev/null
 
-      # === remote forward bypass: 让 user 提问也飘到 office ====================
+      # === remote forward: user prompt 走专用 task channel ====================
+      # office 端把 task 渲染成常驻多行气泡, 跟 rolling HUD 视觉区分。
+      # 长度上限 200 (server 端兜底)。
       REMOTE_FORWARD="${DATA_DIR}/remote-forward.sh"
       if [ -f "${HOME}/.desk-waifu/remote.env" ] && [ -x "${REMOTE_FORWARD}" ]; then
         RF_AGENT="${DESK_WAIFU_AGENT:-claude-code}"
-        # 用 short() 同款截断（office 端会再截到 120 字符兜底）
-        P_SHORT="$(short "${P_CLEAN}" 100)"
-        RF_VALUE_JSON="$(printf '%s' "👤 ${P_SHORT}" | jq -Rs '.' 2>/dev/null || printf '""')"
-        ( printf '{"agent":"%s","type":"hud","value":%s}' "${RF_AGENT}" "${RF_VALUE_JSON}" \
+        P_SHORT="$(short "${P_CLEAN}" 180)"
+        RF_VALUE_JSON="$(printf '%s' "${P_SHORT}" | jq -Rs '.' 2>/dev/null || printf '""')"
+        ( printf '{"agent":"%s","type":"task","value":%s}' "${RF_AGENT}" "${RF_VALUE_JSON}" \
           | "${REMOTE_FORWARD}" >/dev/null 2>&1 ) &
       fi
     fi

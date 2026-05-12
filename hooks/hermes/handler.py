@@ -72,12 +72,18 @@ def _state(name: str) -> None:
 
 
 def _task(text: str | None) -> None:
+    # Two channels in office land:
+    #   task = master's order, sticky until session:end clears it
+    #   hud  = rolling activity (tool calls, AI prose)
+    # Forward to the dedicated `task` channel so the office can render it as
+    # a persistent multi-line speech bubble distinct from rolling HUD.
     if text is None or text == "":
         _atomic_write("task", "")
+        _remote_forward("task", "")
         return
     ts = time.time_ns()
     _atomic_write("task", f"{ts}\t{text}\n")
-    _remote_forward("hud", f"💬 {text}")
+    _remote_forward("task", text)
 
 
 def _hud(text: str, sticky: bool = False) -> None:
