@@ -120,6 +120,16 @@ async def handle(event_type: str, context: dict) -> None:
     if not _enabled():
         return
 
+    # Debug: write each lifecycle event + its context keys to a log so we
+    # can discover the right field names for prompt/message without rerunning
+    # the gateway. Bounded by truncation; cheap. Comment out once stable.
+    if event_type.startswith(("agent:", "session:", "gateway:")):
+        try:
+            with open("/tmp/desk-waifu-handler.log", "a") as _f:
+                _f.write(f"{int(time.time())} {event_type} keys={list(context.keys())[:12]}\n")
+        except Exception:
+            pass
+
     try:
         if event_type == "gateway:startup":
             platforms = context.get("platforms") or []
@@ -139,9 +149,24 @@ async def handle(event_type: str, context: dict) -> None:
             return
 
         if event_type == "agent:start":
-            msg = _short(context.get("message", ""))
-            if msg:
-                _task(msg)
+            # Hermes's context may put the user prompt under different keys
+            # depending on the transport (dingtalk vs whatsapp vs etc).
+            # Try the most common names and pick the first non-empty string.
+            raw_msg = ""
+            for key in ("message", "user_message", "prompt", "user_prompt",
+                        "text", "input", "user_input", "query"):
+                v = context.get(key)
+                if isinstance(v, str) and v.strip():
+                    raw_msg = v.strip()
+                    break
+            if raw_msg:
+                # Local file gets the short (≤28) version for the Hammerspoon
+                # bubble; remote gets up to 180 chars (TASK_MAX on server=200).
+                local_text = _short(raw_msg)
+                remote_text = _short(raw_msg, 180)
+                ts = time.time_ns()
+                _atomic_write("task", f"{ts}\t{local_text}\n")
+                _remote_forward("task", remote_text)
             _state("loading")
             _thinking(True)
             return
