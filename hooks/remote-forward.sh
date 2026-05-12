@@ -3,7 +3,7 @@
 # 旁路: 把 state / bubble 事件转发到云端 hub POST /events。
 # 设计原则:
 #   - 未配 ~/.desk-waifu/remote.env 时静默 exit 0
-#   - curl --max-time 3 + fork 到后台, 绝不阻塞主 hook
+#   - curl --connect-timeout 5 --max-time 10 + fork 到后台, 绝不阻塞主 hook
 #   - 单文件 mkdir lock 保证多 hook 并发生成 instance_id 时不重复
 #   - stderr 全丢; debug 模式下落 ~/.desk-waifu/remote-forward.log
 #
@@ -99,10 +99,12 @@ BODY="$(jq -nc \
 
 URL="${HUB_URL%/}/events"
 
-# fork 到后台 + max-time 3s + stderr 全丢; debug 模式下捕获输出到日志
+# fork 到后台; --connect-timeout 5s + --max-time 10s 给 K8s egress proxy
+# 这种慢启动环境留余量 (TLS handshake 第一次可能 1-2s, max-time 3 容易死掉)
+# stderr 全丢; debug 模式下捕获输出到日志
 if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
   (
-    OUT="$(curl -sS -w 'HTTP %{http_code} in %{time_total}s' --max-time 3 \
+    OUT="$(curl -sS -w 'HTTP %{http_code} in %{time_total}s' --connect-timeout 5 --max-time 10 \
       -X POST "${URL}" \
       -H "Authorization: Bearer ${API_KEY}" \
       -H "X-Client-Id: ${CID}" \
@@ -117,7 +119,7 @@ if [ "${DESK_WAIFU_DEBUG:-0}" = "1" ]; then
     fi
   ) >/dev/null 2>&1 &
 else
-  ( curl -fsS --max-time 3 \
+  ( curl -fsS --connect-timeout 5 --max-time 10 \
       -X POST "${URL}" \
       -H "Authorization: Bearer ${API_KEY}" \
       -H "X-Client-Id: ${CID}" \
