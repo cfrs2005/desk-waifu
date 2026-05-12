@@ -180,28 +180,38 @@ cat ~/.desk-waifu/bubble
 
 **完全可选**：不配 `~/.desk-waifu/remote.env` 时整条逻辑 `exit 0` 沉默，本地零网络模式不受影响。失败也只走后台、`--max-time 3`，绝不阻塞 Claude Code。
 
-### 三种安装模式
+### 两种部署模式
 
-desk-waifu 是**两条独立通道**：
-- **本地通道**：Hammerspoon 浮窗（chibi 实时显示在你的 Mac 桌面）
-- **远端通道**：旁路上报到云端 office（任何人浏览器打开 hub URL 都能看到）
+设计意图是**调试用本地，生产走远端**——二选一，不混着用。
 
-两条通道**互不依赖**，可以单开任意一条，也可以同时开。
+#### A. 本地调试（macOS 桌面，零联网）
 
-| 想要的效果 | install 命令 | 是否再跑 register |
-|---|---|---|
-| **A. 仅本地浮窗**（私享，零联网） | `./scripts/install.sh` | ❌ 不跑 |
-| **B. 本地 + 远端**（自己看浮窗 + 同事在网上也能看到） | `./scripts/install.sh` | ✅ `./scripts/remote-register.sh https://o.20260401.xyz <user>` |
-| **C. 仅远端**（服务器/Linux/dev box，无 GUI） | `./scripts/install.sh --server` | ✅ `./scripts/remote-register.sh https://o.20260401.xyz <user>` |
+```bash
+./scripts/install.sh
+# 装: hooks + Hammerspoon Lua + ~/.claude/settings.json + (检测到) Hermes 桥接
+```
 
-A 模式没 register 时 `remote-forward.sh` 第一行 `[ -f remote.env ] || exit 0` 静默退出，本地链路一字未动。
+chibi 实时浮窗在你 Mac 桌面，state/bubble/hud 全走本地文件链路。`remote-forward.sh` 第一行 `[ -f remote.env ] || exit 0` 静默退出，**零网络**。
 
-`--server` 跳过 Hammerspoon 检查 + Lua 安装，**完全不需要 GUI**。其他都装：hooks、`~/.claude/settings.json` 注册、Hermes 桥接（检测到才装）。
+#### C. 生产远端（云端 office，多人可见）
 
-切换：随时可在两种模式间来回——
-- A→B：跑 `./scripts/remote-register.sh ...`，旁路立刻活
-- B→A：跑 `./scripts/remote-unregister.sh`，删本地 `remote.env`，旁路立刻沉默
-- desktop ↔ server：重跑 `./scripts/install.sh [--server]`，幂等可重入
+```bash
+./scripts/install.sh --server  # 跳过 Hammerspoon/Lua, 只装 hooks + settings + Hermes 桥
+./scripts/remote-register.sh https://o.20260401.xyz <username>
+# ↑ 注册 + 拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600) + 顺手同步 9 张 GIF 到 hub
+```
+
+事件实时打到 `POST https://o.20260401.xyz/events`，任何人浏览器打开 hub URL 看到你的工位活起来。**无桌面 GUI，纯服务器友好**，Linux/CI 节点也能跑。
+
+#### 切换
+
+```bash
+A → C:  ./scripts/install.sh --server && ./scripts/remote-register.sh ...
+C → A:  ./scripts/install.sh         # 重跑加回 Hammerspoon, 幂等可重入
+        ./scripts/remote-unregister.sh   # 顺手关掉远端旁路
+```
+
+> **B 模式**（本地浮窗 + 远端上报同时开）技术上能跑——install.sh 装完之后再 register 就是。但通常不需要：要么调试要么共享，没必要同时盯两块屏幕。
 
 想分两步（注册不传 GIF）的话加 `--no-sync`：
 
