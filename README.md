@@ -180,25 +180,28 @@ cat ~/.desk-waifu/bubble
 
 **完全可选**：不配 `~/.desk-waifu/remote.env` 时整条逻辑 `exit 0` 沉默，本地零网络模式不受影响。失败也只走后台、`--max-time 3`，绝不阻塞 Claude Code。
 
-### 一步接通
+### 三种安装模式
 
-**macOS 桌面**（要浮窗 + 远端上报）：
+desk-waifu 是**两条独立通道**：
+- **本地通道**：Hammerspoon 浮窗（chibi 实时显示在你的 Mac 桌面）
+- **远端通道**：旁路上报到云端 office（任何人浏览器打开 hub URL 都能看到）
 
-```bash
-./scripts/install.sh   # 装: hooks + Hammerspoon Lua + Claude Code settings + (检测到) Hermes 桥接
-./scripts/remote-register.sh https://desk.example.com zhangqy
-# ↑ 一条命令: 注册拿 api_key 落到 ~/.desk-waifu/remote.env (mode 600)
-#   + 顺手把本地 9 张 GIF 上传到 hub (基于 sha256 去重, 已同步会 304 跳过)
-```
+两条通道**互不依赖**，可以单开任意一条，也可以同时开。
 
-**服务器 / 远程 dev box / CI 节点（无桌面 GUI）** — 加 `--server`，**完全不需要 Hammerspoon**：
+| 想要的效果 | install 命令 | 是否再跑 register |
+|---|---|---|
+| **A. 仅本地浮窗**（私享，零联网） | `./scripts/install.sh` | ❌ 不跑 |
+| **B. 本地 + 远端**（自己看浮窗 + 同事在网上也能看到） | `./scripts/install.sh` | ✅ `./scripts/remote-register.sh https://o.20260401.xyz <user>` |
+| **C. 仅远端**（服务器/Linux/dev box，无 GUI） | `./scripts/install.sh --server` | ✅ `./scripts/remote-register.sh https://o.20260401.xyz <user>` |
 
-```bash
-./scripts/install.sh --server   # 跳过 Hammerspoon/Lua, 只装 hooks + settings 注册
-./scripts/remote-register.sh https://desk.example.com zhangqy
-```
+A 模式没 register 时 `remote-forward.sh` 第一行 `[ -f remote.env ] || exit 0` 静默退出，本地链路一字未动。
 
-两种模式都跑完后，state / bubble / hud 事件实时打到 `POST $HUB_URL/events`，无后续操作。
+`--server` 跳过 Hammerspoon 检查 + Lua 安装，**完全不需要 GUI**。其他都装：hooks、`~/.claude/settings.json` 注册、Hermes 桥接（检测到才装）。
+
+切换：随时可在两种模式间来回——
+- A→B：跑 `./scripts/remote-register.sh ...`，旁路立刻活
+- B→A：跑 `./scripts/remote-unregister.sh`，删本地 `remote.env`，旁路立刻沉默
+- desktop ↔ server：重跑 `./scripts/install.sh [--server]`，幂等可重入
 
 想分两步（注册不传 GIF）的话加 `--no-sync`：
 
